@@ -6,6 +6,12 @@ class SimpleUNet(nn.Module):
     """
     一个简化的 U-Net 架构，用于工件轮廓提取。
     该网络能够学习鲁棒的边缘特征，有效区分真实边界与反光伪影。
+
+    A simplified U-Net architecture for workpiece contour extraction.
+    This network can learn robust edge features, effectively distinguishing between true boundaries and reflective artifacts.
+
+    Eine vereinfachte U-Net-Architektur zur Werkstückkonturextraktion.
+    Dieses Netzwerk kann robuste Kantenmerkmale lernen und effektiv zwischen echten Grenzen und reflektierenden Artefakten unterscheiden.
     """
     def __init__(self, in_channels=3, out_channels=1):
         super(SimpleUNet, self).__init__()
@@ -52,6 +58,10 @@ class SimpleUNet(nn.Module):
 def train_model(model, train_loader, criterion, optimizer, device):
     """
     训练循环示例。
+
+    Example training loop.
+
+    Beispiel-Trainingsschleife.
     """
     model.train()
     for images, masks in train_loader:
@@ -66,13 +76,17 @@ def train_model(model, train_loader, criterion, optimizer, device):
 def predict_contour(model, image, device):
     """
     使用训练好的模型预测工件轮廓。
+
+    Predicts workpiece contours using the trained model.
+
+    Prognostiziert Werkstückkonturen mit dem trainierten Modell.
     """
     model.eval()
     with torch.no_grad():
         image_tensor = torch.from_numpy(image).permute(2, 0, 1).float().unsqueeze(0) / 255.0
         image_tensor = image_tensor.to(device)
         output = model(image_tensor)
-        contour_mask = (output.squeeze().cpu().numpy() > 0.5).astype('uint8') * 255
+        contour_mask = (output.squeeze().cpu().numpy() > 0.5).astype("uint8") * 255
     return contour_mask
 
 if __name__ == "__main__":
