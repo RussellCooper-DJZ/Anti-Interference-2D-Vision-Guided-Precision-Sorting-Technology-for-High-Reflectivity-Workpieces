@@ -1,8 +1,13 @@
 __pycache__/
 *.pyc
 *.pyo
-checkpoints/
-verification_results/
 *.onnx
 *.tflite
-.DS_Store
+*.pth
+checkpoints/
+verification_results/
+datasets/
+*.egg-info/
+dist/
+build/
+.eggs/
