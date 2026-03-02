@@ -5,6 +5,7 @@ import torch
 from hdr_processing import exposure_fusion, adaptive_image_enhancement
 from feature_extraction import SimpleUNet, predict_contour
 from localization_and_calibration import subpixel_edge_detection, pixel_to_robot_coords
+from simple_isp_simulator import SimpleISPSimulator # 导入 SimpleISPSimulator
 
 class HighReflectiveSortingSystem:
     def __init__(self, model_path=None):
@@ -21,6 +22,16 @@ class HighReflectiveSortingSystem:
             self.model.load_state_dict(torch.load(model_path, map_location=self.device))
         self.model.eval()
         
+        # 初始化 Simple ISP 模拟器
+        # Initialize Simple ISP simulator
+        # Simple ISP Simulator initialisieren
+        self.isp = SimpleISPSimulator()
+        # 可以根据需要设置默认 ISP 参数
+        # Can set default ISP parameters as needed
+        # Standard-ISP-Parameter können bei Bedarf eingestellt werden
+        self.isp.set_param("V4L2_CID_RZ_ISP_GAMMA", 150) # 示例：设置伽玛值
+        self.isp.set_param("V4L2_CID_RZ_ISP_2DNR", 70)  # 示例：设置 2D 降噪
+        
         # 相机参数 (示例值，需实际标定)
         # Camera parameters (example values, require actual calibration)
         # Kameraparameter (Beispielwerte, erfordern tatsächliche Kalibrierung)
@@ -33,20 +44,27 @@ class HighReflectiveSortingSystem:
         self.R_cam2base = np.eye(3)
         self.t_cam2base = np.array([[100], [200], [500]], dtype=np.float32)
 
-    def process_frame(self, multi_exposure_images):
+    def process_frame(self, bayer_raw_images_list):
         """
-        完整处理流程：HDR融合 -> 增强 -> 特征提取 -> 定位 -> 坐标转换
+        完整处理流程：模拟ISP处理 -> HDR融合 -> 增强 -> 特征提取 -> 定位 -> 坐标转换
 
-        Complete processing flow: HDR fusion -> Enhancement -> Feature extraction -> Localization -> Coordinate transformation
+        Complete processing flow: Simulate ISP processing -> HDR fusion -> Enhancement -> Feature extraction -> Localization -> Coordinate transformation
 
-        Vollständiger Verarbeitungsprozess: HDR-Fusion -> Verbesserung -> Merkmalsextraktion -> Lokalisierung -> Koordinatentransformation
+        Vollständiger Verarbeitungsprozess: ISP-Verarbeitung simulieren -> HDR-Fusion -> Verbesserung -> Merkmalsextraktion -> Lokalisierung -> Koordinatentransformation
         """
         start_time = time.time()
         
+        # 0. 模拟 ISP 处理每个 Bayer RAW 图像
+        # 0. Simulate ISP processing for each Bayer RAW image
+        # 0. ISP-Verarbeitung für jedes Bayer-RAW-Bild simulieren
+        processed_rgb_images = []
+        for raw_img in bayer_raw_images_list:
+            processed_rgb_images.append(self.isp.process_raw_image(raw_img))
+
         # 1. HDR 融合
         # 1. HDR Fusion
         # 1. HDR-Fusion
-        hdr_img = exposure_fusion(multi_exposure_images)
+        hdr_img = exposure_fusion(processed_rgb_images)
         
         # 2. 图像增强
         # 2. Image Enhancement
@@ -94,23 +112,26 @@ def performance_test():
     """
     system = HighReflectiveSortingSystem()
     
-    # 模拟三张不同曝光的图像 (1920x1080)
-    # Simulate three images with different exposures (1920x1080)
-    # Simuliert drei Bilder mit unterschiedlichen Belichtungen (1920x1080)
-    dummy_imgs = [np.random.randint(0, 255, (1080, 1920, 3), dtype=np.uint8) for _ in range(3)]
+    # 模拟三张不同曝光的 Bayer RAW 图像 (1920x1080)
+    # Simulate three Bayer RAW images with different exposures (1920x1080)
+    # Simuliert drei Bayer-RAW-Bilder mit unterschiedlichen Belichtungen (1920x1080)
+    # 注意：这里为了简化模拟，仍然使用灰度图作为“Bayer RAW”输入，实际应是单通道的 Bayer 模式图像
+    # Note: For simplified simulation, grayscale images are still used as "Bayer RAW" input here; actual Bayer mode images should be single-channel.
+    # Hinweis: Zur vereinfachten Simulation werden hier weiterhin Graustufenbilder als "Bayer RAW"-Eingabe verwendet; tatsächliche Bayer-Modus-Bilder sollten einkanalig sein.
+    dummy_bayer_raw_imgs = [np.random.randint(0, 255, (1080, 1920), dtype=np.uint8) for _ in range(3)]
     
     print("Starting performance test...")
     # 预热
     # Warm-up
     # Aufwärmen
-    _ = system.process_frame(dummy_imgs)
+    _ = system.process_frame(dummy_bayer_raw_imgs)
     
     # 测试 10 次取平均
     # Test 10 times and take the average
     # 10 Mal testen und den Durchschnitt nehmen
     times = []
     for i in range(10):
-        res = system.process_frame(dummy_imgs)
+        res = system.process_frame(dummy_bayer_raw_imgs)
         times.append(res["processing_time_ms"])
         print(f"Iteration {i+1}: {res["processing_time_ms"]:.2f} ms")
     
