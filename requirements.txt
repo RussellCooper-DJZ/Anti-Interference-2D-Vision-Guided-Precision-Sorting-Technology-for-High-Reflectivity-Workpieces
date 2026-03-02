@@ -1,0 +1,23 @@
+# AGEANet — 高反光工件精准边缘识别抓取系统
+# Anti-Glare Edge-Aware Network for High-Reflectivity Workpiece Sorting
+
+# 核心依赖
+numpy>=1.21.0
+opencv-python>=4.5.0
+opencv-contrib-python>=4.5.0
+
+# 深度学习框架
+torch>=2.0.0
+torchvision>=0.15.0
+
+# 模型导出 (嵌入式部署)
+onnx>=1.14.0
+onnxscript>=0.1.0
+
+# 可选：TFLite 转换 (嵌入式部署到 RA8P1)
+# tensorflow>=2.13.0
+# onnx-tf>=1.10.0
+
+# 可选：训练可视化
+# tensorboard>=2.13.0
+# matplotlib>=3.5.0
