@@ -36,6 +36,7 @@ from data_augmentation import (
     generate_edge_from_mask,
     generate_sobel_edge,
 )
+from real_world_dataloader import RealWorldMetalDataset, MixedMetalDataset
 
 # ---------------------------------------------------------------------------
 # 日志配置
@@ -414,6 +415,30 @@ class Trainer:
         datasets_train = []
         datasets_val = []
 
+        # 1. 混合模式 (合成 + 真实)
+        if args.real_img_dir and args.real_mask_dir:
+            logger.info(f"模式: 混合训练 (真实数据路径: {args.real_img_dir})")
+            syn_count = args.syn_count if args.syn_count > 0 else 1000
+            synthetic_ds = SyntheticDataset(count=syn_count, img_size=args.img_size, mode='train')
+            real_ds = RealWorldMetalDataset(args.real_img_dir, args.real_mask_dir, target_size=(args.img_size, args.img_size))
+            
+            # 混合训练集
+            train_dataset = MixedMetalDataset(synthetic_ds, real_ds, real_ratio=args.real_ratio)
+            # 验证集优先使用真实数据
+            val_dataset = real_ds if len(real_ds) > 0 else synthetic_ds
+            
+            self.train_loader = DataLoader(
+                train_dataset, batch_size=args.batch_size, shuffle=True,
+                num_workers=args.num_workers, pin_memory=True, drop_last=True,
+            )
+            self.val_loader = DataLoader(
+                val_dataset, batch_size=args.batch_size, shuffle=False,
+                num_workers=args.num_workers, pin_memory=True,
+            )
+            logger.info(f"混合模式: 训练样本 {len(train_dataset)}, 验证样本 {len(val_dataset)}")
+            return
+
+        # 2. 标准模式 (基于 data_dir 或 synthetic_only)
         # 真实数据
         if args.data_dir and Path(args.data_dir).exists():
             real_train = MetalWorkpieceDataset(
@@ -450,7 +475,7 @@ class Trainer:
             logger.info(f"合成数据: {len(syn_train)} 训练 / {len(syn_val)} 验证")
 
         if not datasets_train:
-            logger.error("没有可用的训练数据！请指定 --data_dir 或 --synthetic_only")
+            logger.error("没有可用的训练数据！请指定 --data_dir, --real_img_dir 或 --synthetic_only")
             sys.exit(1)
 
         train_dataset = ConcatDataset(datasets_train) if len(datasets_train) > 1 else datasets_train[0]
@@ -636,10 +661,16 @@ def parse_args():
     # 数据参数
     parser.add_argument('--data_dir', type=str, default=None,
                         help='真实数据集目录 (包含 images/ 和 masks/ 子目录)')
+    parser.add_argument('--real_img_dir', type=str, default=None,
+                        help='真实图像目录 (配合 --real_mask_dir 使用)')
+    parser.add_argument('--real_mask_dir', type=str, default=None,
+                        help='真实掩膜目录')
+    parser.add_argument('--real_ratio', type=float, default=0.5,
+                        help='混合训练中真实数据的比例 (0.0-1.0)')
     parser.add_argument('--synthetic_only', action='store_true',
                         help='仅使用合成数据训练')
-    parser.add_argument('--syn_count', type=int, default=0,
-                        help='合成数据数量 (0=不使用合成数据)')
+    parser.add_argument('--syn_count', type=int, default=1000,
+                        help='合成数据数量')
     parser.add_argument('--img_size', type=int, default=256,
                         help='训练图像尺寸')
 
