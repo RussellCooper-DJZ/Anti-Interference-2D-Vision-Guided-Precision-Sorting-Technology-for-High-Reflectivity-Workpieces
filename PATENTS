@@ -1,0 +1,15 @@
+PATENT NOTICE
+
+The technology implemented in this repository, including but not limited to:
+1. Anti-Glare Edge-Aware U-Net (AGEANet) architecture and its variants.
+2. Static memory pool management and tensor lifecycle optimization for embedded C runtime.
+3. Arm Helium (MVE) optimized kernels for INT8 quantized vision operators.
+4. Clean-room verified independent implementation of inference engine components.
+
+is protected by pending or granted patent applications. 
+
+Access to this source code, whether in private or public repositories, does not grant any license under such patents, except as explicitly provided in the Apache License 2.0 included in this repository. 
+
+Any commercial use, modification, or distribution of the patented technologies requires a separate written license agreement from the patent owner.
+
+For licensing inquiries, please contact the repository owner.
