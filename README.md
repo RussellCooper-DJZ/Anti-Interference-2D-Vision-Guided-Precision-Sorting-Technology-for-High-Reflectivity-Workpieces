@@ -52,6 +52,7 @@
 ├── ra8p1_main_app.c               # RA8P1 嵌入式主应用 (C)
 ├── requirements.txt               # Python 依赖
 ├── high_reflectivity_sorting_solution.md  # 技术方案文档
+├── embedded_pure_c_ai_vision_system_zh.md  # 纯C嵌入式视觉系统架构与实践
 └── hardware_list_zh.md            # 硬件清单
 ```
 
