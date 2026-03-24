@@ -52,6 +52,8 @@
 ├── ra8p1_main_app.c               # RA8P1 嵌入式主应用 (C)
 ├── requirements.txt               # Python 依赖
 ├── high_reflectivity_sorting_solution.md  # 技术方案文档
+├── embedded_pure_c_ai_vision_system_zh.md  # 纯C嵌入式视觉系统架构与实践
+├── embedded_c_runtime/           # 纯C运行时骨架与端到端测试
 └── hardware_list_zh.md            # 硬件清单
 ```
 
@@ -63,6 +65,13 @@
 
 ```bash
 pip install -r requirements.txt
+```
+
+### 1.1 纯 C Runtime 快速验证（30天目标代码）
+
+```bash
+cd embedded_c_runtime
+make test
 ```
 
 ### 2. 使用合成数据快速训练
