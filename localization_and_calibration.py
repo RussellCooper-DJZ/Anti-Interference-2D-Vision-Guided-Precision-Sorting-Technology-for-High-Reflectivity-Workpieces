@@ -1,5 +1,6 @@
 """
 localization_and_calibration.py — 亚像素定位与相机-机器人标定模块
+:Author: RussellCooper
 
 功能模块：
   1. SubpixelLocalizer    — 从分割掩膜/边缘图提取亚像素级目标位姿

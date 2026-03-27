@@ -1,5 +1,6 @@
 """
 train.py — AGEANet 训练主程序
+:Author: RussellCooper
 
 功能：
   - 支持合成数据 / 真实数据 / 混合训练

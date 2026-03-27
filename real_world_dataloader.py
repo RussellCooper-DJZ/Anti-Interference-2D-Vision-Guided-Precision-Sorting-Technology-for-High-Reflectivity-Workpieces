@@ -1,5 +1,6 @@
 """
 real_world_dataloader.py — 船舶场景数据加载器
+:Author: RussellCooper
 
 支持两种数据源：
   1. SynthShipDataset  — 从 synth_dataset_generator 生成的合成数据集目录加载

@@ -1,5 +1,6 @@
 """
 data_augmentation.py — 船舶大型金属高光面专项数据增强管线
+:Author: RussellCooper
 
 针对以下场景特点设计：
   - 大面积镜面高光（钢板、甲板、上层建筑）

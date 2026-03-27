@@ -5,6 +5,7 @@
  * 定义所有视觉算子的函数签名，支持参考实现和 Helium MVE 硬件加速实现。
  *
  * @copyright Copyright (c) 2026. Licensed under the Apache License, Version 2.0.
+ * @author  RussellCooper
  * @patent Protected by pending patent applications. See PATENTS for details.
  */
 

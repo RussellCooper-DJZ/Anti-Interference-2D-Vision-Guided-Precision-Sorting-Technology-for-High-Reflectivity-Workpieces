@@ -1,5 +1,6 @@
 """
 main_pipeline.py — 船舶高光面视觉引导精密分拣主流水线
+:Author: RussellCooper
 
 完整流水线：
   摄像头采集 → HDR 融合 → 反光抑制 → AGEANet 推理

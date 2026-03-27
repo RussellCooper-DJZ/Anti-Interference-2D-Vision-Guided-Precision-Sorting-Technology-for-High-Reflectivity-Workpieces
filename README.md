@@ -71,6 +71,6 @@
 
 本项目采用 **Apache License 2.0** 协议开源。
 
-**专利声明**：本项目实现的 `AGEANet` 架构、`EdgeVision-C` 静态内存管理算法及 `Helium` 优化算子受专利保护。访问源代码不代表获得专利许可，商业用途请联系作者。详情请参阅 [PATENTS](./PATENTS) 文件。
+**专利声明**：本项目实现的 `AGEANet` 架构、`EdgeVision-C` 静态内存管理算法及 `Helium` 优化算子受专利保护。访问源代码不代表获得专利许可，商业用途请联系 RussellCooper。详情请参阅 [PATENTS](./PATENTS) 文件。
 
 **合规性声明**：本项目遵循 **Clean-room 工程化**标准独立开发，所有核心算子实现均基于数学定义，未参考任何受保护的第三方源代码。详情请参阅 [CLEAN_ROOM_AUDIT.md](./CLEAN_ROOM_AUDIT.md)。

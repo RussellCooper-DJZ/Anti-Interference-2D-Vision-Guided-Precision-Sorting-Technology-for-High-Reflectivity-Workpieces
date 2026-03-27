@@ -1,5 +1,6 @@
 """
 synth_dataset_generator.py — 船舶大型金属高光面合成训练数据集生成器
+:Author: RussellCooper
 
 面向场景：
   - 船体钢板、舷侧、甲板、焊缝、铆钉、舷窗、管道等结构

@@ -6,6 +6,7 @@
  * for the inference engine.
  * 
  * @copyright Copyright (c) 2026. Licensed under the Apache License, Version 2.0.
+ * @author  RussellCooper
  * @patent Protected by pending patent applications. See PATENTS for details.
  */
 

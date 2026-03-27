@@ -1,5 +1,6 @@
 """
 hdr_processing.py — 高反光工件专用 HDR 处理与图像增强模块
+:Author: RussellCooper
 
 完整可运行实现，覆盖：
   1. 多重曝光融合  — Mertens (无需曝光时间) + Debevec (需曝光时间)

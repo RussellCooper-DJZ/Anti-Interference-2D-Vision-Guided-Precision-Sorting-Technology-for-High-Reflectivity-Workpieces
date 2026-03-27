@@ -1,5 +1,6 @@
 """
 feature_extraction.py — AGEANet：船舶大型金属高光面边缘感知分割网络
+:Author: RussellCooper
 
 架构说明：
   AGEANet (Anti-Glare Edge-Aware Network) 基于 U-Net 骨架，专为以下挑战设计：
