@@ -1,0 +1,77 @@
+# 专利权利要求书与说明书摘要示例：高反光工件抗干扰 2D 视觉引导精准分拣系统
+# Sample Patent Claims and Abstract: Anti-Interference 2D Vision-Guided Precision Sorting System for High-Reflectivity Workpieces
+
+:Author: RussellCooper
+:Date: 2026-03-27
+
+## 1. 权利要求书示例 (Sample Claims)
+
+### 1.1 独立权利要求 (Independent Claims)
+
+**权利要求 1**：一种高反光工件抗干扰 2D 视觉引导精准分拣系统，其特征在于，包括：
+
+- 图像采集模块，用于采集至少一幅高反光工件的图像；
+- 图像预处理模块，用于对所述图像进行多模态融合反光抑制与图像增强处理，以生成无眩光图像；
+- 边缘感知深度学习网络（AGEANet），用于接收所述无眩光图像，并输出所述工件的分割掩膜和精确边缘；
+- 亚像素级定位模块，用于对所述精确边缘进行亚像素级精修，并结合相机标定参数解算所述工件在机器人坐标系下的三维位姿；以及
+- 机器人控制接口模块，用于将所述三维位姿发送至机器人控制器，以引导机器人对所述工件进行分拣操作。
+
+**Claim 1**: An anti-interference 2D vision-guided precision sorting system for highly reflective workpieces, characterized by comprising:
+
+- an image acquisition module, configured to acquire at least one image of a highly reflective workpiece;
+- an image pre-processing module, configured to perform multi-modal fusion glare suppression and image enhancement on the image to generate a glare-free image;
+- an Edge-Aware Deep Learning Network (AGEANet), configured to receive the glare-free image and output a segmentation mask and precise edges of the workpiece;
+- a sub-pixel localization module, configured to refine the precise edges at a sub-pixel level and calculate a three-dimensional pose of the workpiece in a robot coordinate system based on camera calibration parameters; and
+- a robot control interface module, configured to transmit the three-dimensional pose to a robot controller to guide the robot in performing sorting operations on the workpiece.
+
+**权利要求 2**：一种高反光工件抗干扰 2D 视觉引导精准分拣方法，其特征在于，包括以下步骤：
+
+- 采集至少一幅高反光工件的图像；
+- 对所述图像进行多模态融合反光抑制与图像增强处理，以生成无眩光图像；
+- 将所述无眩光图像输入至边缘感知深度学习网络（AGEANet），以输出所述工件的分割掩膜和精确边缘；
+- 对所述精确边缘进行亚像素级精修，并结合相机标定参数解算所述工件在机器人坐标系下的三维位姿；以及
+- 将所述三维位姿发送至机器人控制器，以引导机器人对所述工件进行分拣操作。
+
+**Claim 2**: An anti-interference 2D vision-guided precision sorting method for highly reflective workpieces, characterized by comprising the steps of:
+
+- acquiring at least one image of a highly reflective workpiece;
+- performing multi-modal fusion glare suppression and image enhancement on the image to generate a glare-free image;
+- inputting the glare-free image into an Edge-Aware Deep Learning Network (AGEANet) to output a segmentation mask and precise edges of the workpiece;
+- refining the precise edges at a sub-pixel level and calculating a three-dimensional pose of the workpiece in a robot coordinate system based on camera calibration parameters; and
+- transmitting the three-dimensional pose to a robot controller to guide the robot in performing sorting operations on the workpiece.
+
+### 1.2 从属权利要求示例 (Dependent Claims)
+
+**权利要求 3**：根据权利要求 1 或 2 所述的系统或方法，其特征在于，所述边缘感知深度学习网络（AGEANet）包括一个主分割分支和一个边缘感知分支，所述边缘感知分支用于显式地学习和预测所述工件的精确边缘。
+
+**Claim 3**: The system or method according to Claim 1 or 2, wherein the Edge-Aware Deep Learning Network (AGEANet) comprises a main segmentation branch and an edge-aware branch, the edge-aware branch being configured to explicitly learn and predict the precise edges of the workpiece.
+
+**权利要求 4**：根据权利要求 3 所述的系统或方法，其特征在于，所述边缘感知深度学习网络（AGEANet）还包括一个卷积块注意力模块（CBAM），用于增强网络对关键特征的关注度。
+
+**Claim 4**: The system or method according to Claim 3, wherein the Edge-Aware Deep Learning Network (AGEANet) further comprises a Convolutional Block Attention Module (CBAM) configured to enhance the network's focus on key features.
+
+**权利要求 5**：根据权利要求 1 或 2 所述的系统或方法，其特征在于，所述多模态融合反光抑制与图像增强处理包括多曝光 HDR 融合、偏振图像处理和自适应高光检测修复中的至少一种。
+
+**Claim 5**: The system or method according to Claim 1 or 2, wherein the multi-modal fusion glare suppression and image enhancement processing comprises at least one of multi-exposure HDR fusion, polarized image processing, and adaptive highlight detection and repair.
+
+**权利要求 6**：根据权利要求 1 或 2 所述的系统或方法，其特征在于，所述亚像素级精修采用 Zernike 矩或高斯拟合算法。
+
+**Claim 6**: The system or method according to Claim 1 or 2, wherein the sub-pixel level refinement employs a Zernike moment or Gaussian fitting algorithm.
+
+**权利要求 7**：根据权利要求 1 所述的系统，其特征在于，所述系统还包括一个嵌入式纯 C 推理引擎（EdgeVision-C），用于在嵌入式平台上高效运行所述边缘感知深度学习网络（AGEANet）。
+
+**Claim 7**: The system according to Claim 1, wherein the system further comprises an Embedded Pure C Inference Engine (EdgeVision-C) configured to efficiently run the Edge-Aware Deep Learning Network (AGEANet) on an embedded platform.
+
+**权利要求 8**：根据权利要求 7 所述的系统，其特征在于，所述嵌入式纯 C 推理引擎（EdgeVision-C）采用静态内存管理、分层运行时和 Arm Helium (MVE) 向量化优化，并支持 INT8 量化推理。
+
+**Claim 8**: The system according to Claim 7, wherein the Embedded Pure C Inference Engine (EdgeVision-C) employs static memory management, hierarchical runtime, and Arm Helium (MVE) vectorization optimization, and supports INT8 quantized inference.
+
+**权利要求 9**：根据权利要求 1 或 2 所述的系统或方法，其特征在于，所述图像采集模块采集的图像用于训练所述边缘感知深度学习网络（AGEANet），所述图像通过一个全国复杂场景合成训练数据集生成器生成，该生成器能够模拟至少 8 种工业场景和 7 种复杂光照条件。
+
+**Claim 9**: The system or method according to Claim 1 or 2, wherein the images acquired by the image acquisition module are used to train the Edge-Aware Deep Learning Network (AGEANet), and the images are generated by a national complex scene synthetic training dataset generator capable of simulating at least 8 industrial scenes and 7 complex lighting conditions.
+
+## 2. 说明书摘要示例 (Sample Abstract)
+
+**中**: 本发明公开了一种高反光工件抗干扰 2D 视觉引导精准分拣系统及方法。该系统通过多模态融合反光抑制与图像增强技术处理高反光图像，将处理后的图像输入至边缘感知深度学习网络（AGEANet）以获取工件的精确边缘和分割掩膜。随后，亚像素级定位模块对边缘进行精修并解算工件三维位姿，并通过机器人控制接口引导机器人进行分拣。本发明还包括一个针对嵌入式平台优化的纯 C 推理引擎（EdgeVision-C）和一个全国复杂场景合成训练数据集生成器。本发明有效解决了高反光、复杂光照环境下工件识别与定位的难题，实现了亚像素级精度和嵌入式高效部署。
+
+**En**: The present invention discloses an anti-interference 2D vision-guided precision sorting system and method for highly reflective workpieces. The system processes highly reflective images using multi-modal fusion glare suppression and image enhancement techniques, and inputs the processed images into an Edge-Aware Deep Learning Network (AGEANet) to obtain precise edges and segmentation masks of the workpiece. Subsequently, a sub-pixel localization module refines the edges and calculates the workpiece's three-dimensional pose, guiding a robot to perform sorting via a robot control interface. The invention also includes a Pure C Inference Engine (EdgeVision-C) optimized for embedded platforms and a national complex scene synthetic training dataset generator. This invention effectively solves the challenges of workpiece recognition and localization in highly reflective, complex lighting environments, achieving sub-pixel accuracy and efficient embedded deployment.
