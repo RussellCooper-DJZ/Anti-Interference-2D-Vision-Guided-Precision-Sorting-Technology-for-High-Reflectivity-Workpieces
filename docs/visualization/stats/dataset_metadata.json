@@ -1,0 +1,449 @@
+{
+  "generator": "synth_national_scenes.py",
+  "author": "RussellCooper",
+  "seed": 42,
+  "image_size": "256x256",
+  "total_combinations": 56,
+  "scenes": {
+    "SHIPYARD": {
+      "label": "Shipyard (Ship Hull)",
+      "weight": 0.18,
+      "lights": {
+        "SIDE_SUN": {
+          "brightness_mean": 132.76,
+          "brightness_std": 38.92,
+          "highlight_ratio": 3.26,
+          "mask_coverage": 33.56,
+          "edge_density": 2.01
+        },
+        "TOP_SKYLIGHT": {
+          "brightness_mean": 158.07,
+          "brightness_std": 40.83,
+          "highlight_ratio": 9.42,
+          "mask_coverage": 37.97,
+          "edge_density": 2.91
+        },
+        "WATER_REFL": {
+          "brightness_mean": 94.64,
+          "brightness_std": 33.85,
+          "highlight_ratio": 0.37,
+          "mask_coverage": 32.04,
+          "edge_density": 1.91
+        },
+        "OVERCAST": {
+          "brightness_mean": 145.47,
+          "brightness_std": 38.45,
+          "highlight_ratio": 0.0,
+          "mask_coverage": 38.65,
+          "edge_density": 2.91
+        },
+        "NIGHT_LED": {
+          "brightness_mean": 77.61,
+          "brightness_std": 56.0,
+          "highlight_ratio": 2.64,
+          "mask_coverage": 33.11,
+          "edge_density": 1.94
+        },
+        "WELD_ARC": {
+          "brightness_mean": 63.71,
+          "brightness_std": 46.96,
+          "highlight_ratio": 0.0,
+          "mask_coverage": 31.38,
+          "edge_density": 2.63
+        },
+        "MIXED": {
+          "brightness_mean": 130.0,
+          "brightness_std": 24.27,
+          "highlight_ratio": 0.0,
+          "mask_coverage": 30.92,
+          "edge_density": 1.93
+        }
+      }
+    },
+    "STEEL_MILL": {
+      "label": "Steel Mill (Hot Coil)",
+      "weight": 0.15,
+      "lights": {
+        "SIDE_SUN": {
+          "brightness_mean": 176.52,
+          "brightness_std": 26.87,
+          "highlight_ratio": 9.64,
+          "mask_coverage": 72.26,
+          "edge_density": 4.01
+        },
+        "TOP_SKYLIGHT": {
+          "brightness_mean": 161.65,
+          "brightness_std": 42.68,
+          "highlight_ratio": 12.2,
+          "mask_coverage": 63.83,
+          "edge_density": 4.19
+        },
+        "WATER_REFL": {
+          "brightness_mean": 123.27,
+          "brightness_std": 35.53,
+          "highlight_ratio": 1.85,
+          "mask_coverage": 37.82,
+          "edge_density": 3.1
+        },
+        "OVERCAST": {
+          "brightness_mean": 154.42,
+          "brightness_std": 28.65,
+          "highlight_ratio": 0.0,
+          "mask_coverage": 51.72,
+          "edge_density": 4.7
+        },
+        "NIGHT_LED": {
+          "brightness_mean": 122.59,
+          "brightness_std": 52.84,
+          "highlight_ratio": 3.9,
+          "mask_coverage": 67.83,
+          "edge_density": 4.18
+        },
+        "WELD_ARC": {
+          "brightness_mean": 95.3,
+          "brightness_std": 75.8,
+          "highlight_ratio": 7.36,
+          "mask_coverage": 52.84,
+          "edge_density": 4.58
+        },
+        "MIXED": {
+          "brightness_mean": 151.68,
+          "brightness_std": 24.02,
+          "highlight_ratio": 0.0,
+          "mask_coverage": 35.34,
+          "edge_density": 4.4
+        }
+      }
+    },
+    "BRIDGE": {
+      "label": "Bridge (Steel Box Girder)",
+      "weight": 0.15,
+      "lights": {
+        "SIDE_SUN": {
+          "brightness_mean": 161.48,
+          "brightness_std": 43.95,
+          "highlight_ratio": 11.98,
+          "mask_coverage": 48.83,
+          "edge_density": 4.21
+        },
+        "TOP_SKYLIGHT": {
+          "brightness_mean": 179.49,
+          "brightness_std": 31.32,
+          "highlight_ratio": 11.76,
+          "mask_coverage": 37.22,
+          "edge_density": 3.41
+        },
+        "WATER_REFL": {
+          "brightness_mean": 113.3,
+          "brightness_std": 36.21,
+          "highlight_ratio": 0.14,
+          "mask_coverage": 46.48,
+          "edge_density": 3.69
+        },
+        "OVERCAST": {
+          "brightness_mean": 153.41,
+          "brightness_std": 27.47,
+          "highlight_ratio": 0.02,
+          "mask_coverage": 44.43,
+          "edge_density": 3.06
+        },
+        "NIGHT_LED": {
+          "brightness_mean": 83.11,
+          "brightness_std": 70.69,
+          "highlight_ratio": 4.96,
+          "mask_coverage": 54.27,
+          "edge_density": 3.41
+        },
+        "WELD_ARC": {
+          "brightness_mean": 74.98,
+          "brightness_std": 54.0,
+          "highlight_ratio": 0.0,
+          "mask_coverage": 32.39,
+          "edge_density": 3.04
+        },
+        "MIXED": {
+          "brightness_mean": 142.0,
+          "brightness_std": 22.42,
+          "highlight_ratio": 0.04,
+          "mask_coverage": 48.36,
+          "edge_density": 3.31
+        }
+      }
+    },
+    "PORT_CRANE": {
+      "label": "Port Crane (Container Top)",
+      "weight": 0.12,
+      "lights": {
+        "SIDE_SUN": {
+          "brightness_mean": 171.29,
+          "brightness_std": 43.27,
+          "highlight_ratio": 11.33,
+          "mask_coverage": 38.71,
+          "edge_density": 7.75
+        },
+        "TOP_SKYLIGHT": {
+          "brightness_mean": 136.49,
+          "brightness_std": 51.93,
+          "highlight_ratio": 9.17,
+          "mask_coverage": 37.8,
+          "edge_density": 4.77
+        },
+        "WATER_REFL": {
+          "brightness_mean": 94.59,
+          "brightness_std": 36.98,
+          "highlight_ratio": 0.02,
+          "mask_coverage": 41.55,
+          "edge_density": 5.89
+        },
+        "OVERCAST": {
+          "brightness_mean": 153.86,
+          "brightness_std": 20.6,
+          "highlight_ratio": 0.0,
+          "mask_coverage": 23.7,
+          "edge_density": 6.45
+        },
+        "NIGHT_LED": {
+          "brightness_mean": 75.1,
+          "brightness_std": 60.76,
+          "highlight_ratio": 3.49,
+          "mask_coverage": 35.68,
+          "edge_density": 6.24
+        },
+        "WELD_ARC": {
+          "brightness_mean": 75.99,
+          "brightness_std": 55.23,
+          "highlight_ratio": 2.96,
+          "mask_coverage": 27.65,
+          "edge_density": 8.23
+        },
+        "MIXED": {
+          "brightness_mean": 140.75,
+          "brightness_std": 24.36,
+          "highlight_ratio": 0.0,
+          "mask_coverage": 20.15,
+          "edge_density": 8.35
+        }
+      }
+    },
+    "RAILWAY": {
+      "label": "Railway (Al Body Skin)",
+      "weight": 0.15,
+      "lights": {
+        "SIDE_SUN": {
+          "brightness_mean": 166.04,
+          "brightness_std": 38.0,
+          "highlight_ratio": 8.89,
+          "mask_coverage": 42.3,
+          "edge_density": 3.47
+        },
+        "TOP_SKYLIGHT": {
+          "brightness_mean": 167.41,
+          "brightness_std": 55.12,
+          "highlight_ratio": 14.86,
+          "mask_coverage": 48.16,
+          "edge_density": 3.47
+        },
+        "WATER_REFL": {
+          "brightness_mean": 84.37,
+          "brightness_std": 38.79,
+          "highlight_ratio": 0.0,
+          "mask_coverage": 47.77,
+          "edge_density": 3.48
+        },
+        "OVERCAST": {
+          "brightness_mean": 158.26,
+          "brightness_std": 53.95,
+          "highlight_ratio": 0.0,
+          "mask_coverage": 53.99,
+          "edge_density": 3.27
+        },
+        "NIGHT_LED": {
+          "brightness_mean": 95.14,
+          "brightness_std": 74.67,
+          "highlight_ratio": 3.98,
+          "mask_coverage": 48.23,
+          "edge_density": 3.04
+        },
+        "WELD_ARC": {
+          "brightness_mean": 90.5,
+          "brightness_std": 64.94,
+          "highlight_ratio": 0.0,
+          "mask_coverage": 48.55,
+          "edge_density": 3.48
+        },
+        "MIXED": {
+          "brightness_mean": 152.25,
+          "brightness_std": 45.78,
+          "highlight_ratio": 0.0,
+          "mask_coverage": 48.55,
+          "edge_density": 3.48
+        }
+      }
+    },
+    "CURTAIN_WALL": {
+      "label": "Curtain Wall (Al Frame)",
+      "weight": 0.1,
+      "lights": {
+        "SIDE_SUN": {
+          "brightness_mean": 157.45,
+          "brightness_std": 43.56,
+          "highlight_ratio": 10.17,
+          "mask_coverage": 99.62,
+          "edge_density": 1.15
+        },
+        "TOP_SKYLIGHT": {
+          "brightness_mean": 156.68,
+          "brightness_std": 44.94,
+          "highlight_ratio": 9.54,
+          "mask_coverage": 99.23,
+          "edge_density": 2.31
+        },
+        "WATER_REFL": {
+          "brightness_mean": 119.7,
+          "brightness_std": 34.89,
+          "highlight_ratio": 0.0,
+          "mask_coverage": 99.23,
+          "edge_density": 2.31
+        },
+        "OVERCAST": {
+          "brightness_mean": 99.82,
+          "brightness_std": 27.23,
+          "highlight_ratio": 0.0,
+          "mask_coverage": 99.24,
+          "edge_density": 2.29
+        },
+        "NIGHT_LED": {
+          "brightness_mean": 143.98,
+          "brightness_std": 53.2,
+          "highlight_ratio": 8.97,
+          "mask_coverage": 99.24,
+          "edge_density": 2.29
+        },
+        "WELD_ARC": {
+          "brightness_mean": 149.93,
+          "brightness_std": 53.72,
+          "highlight_ratio": 10.8,
+          "mask_coverage": 99.62,
+          "edge_density": 1.15
+        },
+        "MIXED": {
+          "brightness_mean": 138.2,
+          "brightness_std": 31.0,
+          "highlight_ratio": 0.06,
+          "mask_coverage": 98.47,
+          "edge_density": 1.18
+        }
+      }
+    },
+    "PIPELINE": {
+      "label": "Pipeline (LNG Tank)",
+      "weight": 0.1,
+      "lights": {
+        "SIDE_SUN": {
+          "brightness_mean": 170.95,
+          "brightness_std": 31.3,
+          "highlight_ratio": 10.64,
+          "mask_coverage": 79.01,
+          "edge_density": 4.3
+        },
+        "TOP_SKYLIGHT": {
+          "brightness_mean": 169.61,
+          "brightness_std": 32.58,
+          "highlight_ratio": 9.8,
+          "mask_coverage": 60.3,
+          "edge_density": 3.72
+        },
+        "WATER_REFL": {
+          "brightness_mean": 125.35,
+          "brightness_std": 48.7,
+          "highlight_ratio": 0.89,
+          "mask_coverage": 49.38,
+          "edge_density": 3.41
+        },
+        "OVERCAST": {
+          "brightness_mean": 152.42,
+          "brightness_std": 27.58,
+          "highlight_ratio": 0.1,
+          "mask_coverage": 51.88,
+          "edge_density": 4.89
+        },
+        "NIGHT_LED": {
+          "brightness_mean": 135.64,
+          "brightness_std": 69.66,
+          "highlight_ratio": 4.23,
+          "mask_coverage": 63.73,
+          "edge_density": 5.91
+        },
+        "WELD_ARC": {
+          "brightness_mean": 136.4,
+          "brightness_std": 77.17,
+          "highlight_ratio": 12.72,
+          "mask_coverage": 59.34,
+          "edge_density": 6.32
+        },
+        "MIXED": {
+          "brightness_mean": 146.55,
+          "brightness_std": 19.69,
+          "highlight_ratio": 0.22,
+          "mask_coverage": 77.33,
+          "edge_density": 6.06
+        }
+      }
+    },
+    "WIND_TURBINE": {
+      "label": "Wind Turbine (Tower/Nacelle)",
+      "weight": 0.05,
+      "lights": {
+        "SIDE_SUN": {
+          "brightness_mean": 178.12,
+          "brightness_std": 40.0,
+          "highlight_ratio": 18.86,
+          "mask_coverage": 34.84,
+          "edge_density": 4.03
+        },
+        "TOP_SKYLIGHT": {
+          "brightness_mean": 202.32,
+          "brightness_std": 26.91,
+          "highlight_ratio": 29.18,
+          "mask_coverage": 36.71,
+          "edge_density": 4.05
+        },
+        "WATER_REFL": {
+          "brightness_mean": 137.94,
+          "brightness_std": 68.07,
+          "highlight_ratio": 24.6,
+          "mask_coverage": 37.92,
+          "edge_density": 3.85
+        },
+        "OVERCAST": {
+          "brightness_mean": 195.91,
+          "brightness_std": 18.31,
+          "highlight_ratio": 18.72,
+          "mask_coverage": 29.57,
+          "edge_density": 4.14
+        },
+        "NIGHT_LED": {
+          "brightness_mean": 128.13,
+          "brightness_std": 87.12,
+          "highlight_ratio": 28.33,
+          "mask_coverage": 34.95,
+          "edge_density": 3.61
+        },
+        "WELD_ARC": {
+          "brightness_mean": 111.0,
+          "brightness_std": 93.03,
+          "highlight_ratio": 28.48,
+          "mask_coverage": 31.92,
+          "edge_density": 4.88
+        },
+        "MIXED": {
+          "brightness_mean": 177.06,
+          "brightness_std": 29.95,
+          "highlight_ratio": 18.65,
+          "mask_coverage": 37.18,
+          "edge_density": 4.8
+        }
+      }
+    }
+  }
+}

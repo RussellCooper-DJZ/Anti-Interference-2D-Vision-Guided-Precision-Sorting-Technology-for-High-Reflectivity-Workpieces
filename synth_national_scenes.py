@@ -220,6 +220,10 @@ class DrawUtils:
             rng = np.random.default_rng()
         result = canvas.copy()
         x0, y0, x1, y1 = region
+        # 裁剪到画布范围内
+        H_canvas, W_canvas = result.shape[:2]
+        x0 = max(0, x0); y0 = max(0, y0)
+        x1 = min(W_canvas, x1); y1 = min(H_canvas, y1)
         h, w = y1 - y0, x1 - x0
         if h <= 0 or w <= 0:
             return result
