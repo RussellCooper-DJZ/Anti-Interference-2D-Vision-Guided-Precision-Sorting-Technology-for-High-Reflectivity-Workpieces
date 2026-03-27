@@ -1,505 +1,489 @@
 """
-feature_extraction.py — 高反光工件边缘分割模型
+feature_extraction.py — AGEANet：船舶大型金属高光面边缘感知分割网络
 
-核心架构：Anti-Glare Edge-Aware U-Net (AGEANet)
-  - 4 层编码器 + 4 层解码器，通道数 [64, 128, 256, 512]
-  - CBAM (Convolutional Block Attention Module) 注意力机制
-  - 独立的边缘感知分支 (Edge-Aware Branch)
-  - 高光抑制前端 (Specular Suppression Frontend)
-  - 支持 TFLite 导出的轻量化变体 (AGEANet-Lite)
+架构说明：
+  AGEANet (Anti-Glare Edge-Aware Network) 基于 U-Net 骨架，专为以下挑战设计：
+  1. 大面积镜面高光导致的局部信息丢失
+  2. 焊缝/铆钉/舷窗等细小结构边缘的精准定位
+  3. 复杂环境光（水面反射、侧光、泛光灯）下的鲁棒性
 
-Anti-Glare Edge-Aware U-Net (AGEANet) for high-reflectivity workpiece edge segmentation.
+  核心改进：
+  - CBAM 注意力模块（通道 + 空间）：抑制高光区域的虚假激活
+  - 双分支输出头：语义分割 + 边缘检测同步训练
+  - 高光感知跳跃连接：在跳跃连接处加入高光掩膜门控
+  - 深度可分离卷积（Lite 版）：面向 RA8P1 嵌入式部署
+
+模型变体：
+  AGEANet      — 标准版，~8.5M 参数，适合 GPU 训练
+  AGEANetLite  — 轻量版，~1.2M 参数，适合嵌入式推理
+
+用法::
+
+    model = AGEANet(in_channels=3, base_ch=64)
+    out = model(x)  # x: (B,3,H,W)
+    seg  = out['seg']   # (B,1,H,W) [0,1]
+    edge = out['edge']  # (B,1,H,W) [0,1]
 """
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import numpy as np
+from typing import Dict, Optional
 
 
-# ---------------------------------------------------------------------------
-# 1. 注意力模块 — CBAM (Channel + Spatial Attention)
-# ---------------------------------------------------------------------------
+# ============================================================
+# 1. 基础模块
+# ============================================================
+
+class ConvBNReLU(nn.Module):
+    """Conv2d + BatchNorm2d + ReLU（可选残差）。"""
+
+    def __init__(self, in_ch: int, out_ch: int, kernel: int = 3,
+                 stride: int = 1, padding: int = 1,
+                 groups: int = 1, relu: bool = True):
+        super().__init__()
+        self.conv = nn.Conv2d(in_ch, out_ch, kernel, stride, padding,
+                              groups=groups, bias=False)
+        self.bn   = nn.BatchNorm2d(out_ch)
+        self.act  = nn.ReLU(inplace=True) if relu else nn.Identity()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.act(self.bn(self.conv(x)))
+
+
+class DepthwiseSeparableConv(nn.Module):
+    """深度可分离卷积（Depthwise + Pointwise），用于 Lite 版。"""
+
+    def __init__(self, in_ch: int, out_ch: int, stride: int = 1):
+        super().__init__()
+        self.dw = ConvBNReLU(in_ch, in_ch, kernel=3, stride=stride,
+                             padding=1, groups=in_ch)
+        self.pw = ConvBNReLU(in_ch, out_ch, kernel=1, padding=0)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.pw(self.dw(x))
+
+
+class DoubleConv(nn.Module):
+    """标准 U-Net 双卷积块。"""
+
+    def __init__(self, in_ch: int, out_ch: int, mid_ch: Optional[int] = None,
+                 depthwise: bool = False):
+        super().__init__()
+        mid_ch = mid_ch or out_ch
+        if depthwise:
+            self.block = nn.Sequential(
+                DepthwiseSeparableConv(in_ch, mid_ch),
+                DepthwiseSeparableConv(mid_ch, out_ch),
+            )
+        else:
+            self.block = nn.Sequential(
+                ConvBNReLU(in_ch, mid_ch),
+                ConvBNReLU(mid_ch, out_ch),
+            )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.block(x)
+
+
+# ============================================================
+# 2. CBAM 注意力模块
+# ============================================================
 
 class ChannelAttention(nn.Module):
-    """通道注意力：学习哪些通道对边缘特征更重要，抑制反光通道响应。"""
+    """
+    通道注意力（Channel Attention Module）。
 
-    def __init__(self, channels, reduction=16):
+    通过全局平均池化 + 全局最大池化，学习各通道的重要性权重。
+    对高光区域产生的虚假高激活通道进行抑制。
+    """
+
+    def __init__(self, channels: int, reduction: int = 16):
         super().__init__()
-        mid = max(channels // reduction, 8)
-        self.fc = nn.Sequential(
+        mid = max(channels // reduction, 4)
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.max_pool = nn.AdaptiveMaxPool2d(1)
+        self.mlp = nn.Sequential(
+            nn.Flatten(),
             nn.Linear(channels, mid, bias=False),
             nn.ReLU(inplace=True),
             nn.Linear(mid, channels, bias=False),
         )
+        self.sigmoid = nn.Sigmoid()
 
-    def forward(self, x):
-        b, c, _, _ = x.size()
-        avg_pool = x.mean(dim=[2, 3])                       # (B, C)
-        max_pool = x.amax(dim=[2, 3])                       # (B, C)
-        attn = torch.sigmoid(self.fc(avg_pool) + self.fc(max_pool))  # (B, C)
-        return x * attn.unsqueeze(-1).unsqueeze(-1)
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        avg = self.mlp(self.avg_pool(x))
+        mx  = self.mlp(self.max_pool(x))
+        scale = self.sigmoid(avg + mx).unsqueeze(-1).unsqueeze(-1)
+        return x * scale
 
 
 class SpatialAttention(nn.Module):
-    """空间注意力：学习哪些空间位置是真实边缘，抑制高光伪影区域。"""
+    """
+    空间注意力（Spatial Attention Module）。
 
-    def __init__(self, kernel_size=7):
+    沿通道维度做平均/最大池化后卷积，学习空间位置的重要性权重。
+    帮助模型聚焦于结构边缘区域，忽略大面积高光干扰。
+    """
+
+    def __init__(self, kernel_size: int = 7):
         super().__init__()
-        pad = kernel_size // 2
-        self.conv = nn.Conv2d(2, 1, kernel_size, padding=pad, bias=False)
+        padding = kernel_size // 2
+        self.conv = nn.Conv2d(2, 1, kernel_size, padding=padding, bias=False)
+        self.sigmoid = nn.Sigmoid()
 
-    def forward(self, x):
-        avg_out = x.mean(dim=1, keepdim=True)
-        max_out = x.amax(dim=1, keepdim=True)
-        attn = torch.sigmoid(self.conv(torch.cat([avg_out, max_out], dim=1)))
-        return x * attn
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        avg = x.mean(dim=1, keepdim=True)
+        mx, _ = x.max(dim=1, keepdim=True)
+        feat = torch.cat([avg, mx], dim=1)
+        scale = self.sigmoid(self.conv(feat))
+        return x * scale
 
 
 class CBAM(nn.Module):
-    """CBAM: 先通道注意力再空间注意力，联合抑制反光伪影。"""
+    """CBAM：先通道注意力，再空间注意力。"""
 
-    def __init__(self, channels, reduction=16, spatial_kernel=7):
+    def __init__(self, channels: int, reduction: int = 16, spatial_kernel: int = 7):
         super().__init__()
         self.ca = ChannelAttention(channels, reduction)
         self.sa = SpatialAttention(spatial_kernel)
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.sa(self.ca(x))
 
 
-# ---------------------------------------------------------------------------
-# 2. 高光抑制前端 (Specular Suppression Frontend)
-# ---------------------------------------------------------------------------
+# ============================================================
+# 3. 高光感知门控跳跃连接
+# ============================================================
 
-class SpecularSuppression(nn.Module):
+class GlareGatedSkip(nn.Module):
     """
-    可学习的高光抑制前端：
-    - 检测过曝区域 (亮度 > 阈值)
-    - 通过可学习卷积生成抑制掩膜
-    - 将原始图像与抑制后的图像融合
+    高光感知门控跳跃连接。
+
+    在 U-Net 跳跃连接处，通过检测高光区域（高亮度、低饱和度）
+    生成软门控权重，降低高光区域的跳跃连接权重，
+    防止高光伪特征直接传递到解码器。
     """
 
-    def __init__(self, in_channels=3):
+    def __init__(self, channels: int):
         super().__init__()
-        self.detect = nn.Sequential(
-            nn.Conv2d(in_channels, 16, 3, padding=1),
-            nn.BatchNorm2d(16),
+        # 高光检测分支：轻量 1x1 卷积估计高光概率
+        self.glare_detector = nn.Sequential(
+            nn.Conv2d(channels, channels // 4, 1, bias=False),
+            nn.BatchNorm2d(channels // 4),
             nn.ReLU(inplace=True),
-            nn.Conv2d(16, 16, 3, padding=1),
-            nn.BatchNorm2d(16),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(16, 1, 1),
+            nn.Conv2d(channels // 4, 1, 1, bias=False),
             nn.Sigmoid(),
         )
-        self.refine = nn.Sequential(
-            nn.Conv2d(in_channels, in_channels, 3, padding=1),
-            nn.BatchNorm2d(in_channels),
-            nn.ReLU(inplace=True),
-        )
+        # 特征精炼
+        self.refine = ConvBNReLU(channels, channels, kernel=1, padding=0)
 
-    def forward(self, x):
-        glare_mask = self.detect(x)          # (B, 1, H, W) 高光概率图
-        refined = self.refine(x)             # (B, 3, H, W) 修复后的图像
-        out = x * (1 - glare_mask) + refined * glare_mask
-        return out, glare_mask
+    def forward(self, skip: torch.Tensor) -> torch.Tensor:
+        # glare_map: (B,1,H,W)，高光区域接近 1
+        glare_map = self.glare_detector(skip)
+        # 门控：高光区域权重降低
+        gate = 1.0 - glare_map * 0.7  # 最多抑制 70%
+        return self.refine(skip * gate)
 
 
-# ---------------------------------------------------------------------------
-# 3. 基础构建块
-# ---------------------------------------------------------------------------
+# ============================================================
+# 4. 编码器块
+# ============================================================
 
-class ConvBlock(nn.Module):
-    """双卷积块 + 可选 CBAM 注意力。"""
+class EncoderBlock(nn.Module):
+    """编码器块：DoubleConv + CBAM + MaxPool。"""
 
-    def __init__(self, in_c, out_c, use_cbam=True):
+    def __init__(self, in_ch: int, out_ch: int,
+                 use_cbam: bool = True, depthwise: bool = False):
         super().__init__()
-        self.conv = nn.Sequential(
-            nn.Conv2d(in_c, out_c, 3, padding=1, bias=False),
-            nn.BatchNorm2d(out_c),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(out_c, out_c, 3, padding=1, bias=False),
-            nn.BatchNorm2d(out_c),
-            nn.ReLU(inplace=True),
-        )
-        self.cbam = CBAM(out_c) if use_cbam else nn.Identity()
+        self.conv = DoubleConv(in_ch, out_ch, depthwise=depthwise)
+        self.attn = CBAM(out_ch) if use_cbam else nn.Identity()
+        self.pool = nn.MaxPool2d(2, 2)
 
-    def forward(self, x):
-        return self.cbam(self.conv(x))
+    def forward(self, x: torch.Tensor):
+        feat = self.attn(self.conv(x))
+        return feat, self.pool(feat)  # (skip, pooled)
 
 
-class DepthwiseSeparableConv(nn.Module):
-    """深度可分离卷积块 — 用于轻量化变体。"""
+# ============================================================
+# 5. 解码器块
+# ============================================================
 
-    def __init__(self, in_c, out_c):
+class DecoderBlock(nn.Module):
+    """解码器块：双线性上采样 + 跳跃连接 + DoubleConv。"""
+
+    def __init__(self, in_ch: int, skip_ch: int, out_ch: int,
+                 use_glare_gate: bool = True, depthwise: bool = False):
         super().__init__()
-        self.depthwise = nn.Conv2d(in_c, in_c, 3, padding=1, groups=in_c, bias=False)
-        self.pointwise = nn.Conv2d(in_c, out_c, 1, bias=False)
-        self.bn = nn.BatchNorm2d(out_c)
-        self.relu = nn.ReLU(inplace=True)
+        self.up   = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False)
+        self.gate = GlareGatedSkip(skip_ch) if use_glare_gate else nn.Identity()
+        self.conv = DoubleConv(in_ch + skip_ch, out_ch, depthwise=depthwise)
 
-    def forward(self, x):
-        return self.relu(self.bn(self.pointwise(self.depthwise(x))))
-
-
-class LiteConvBlock(nn.Module):
-    """轻量化双卷积块 — 用于嵌入式部署。"""
-
-    def __init__(self, in_c, out_c):
-        super().__init__()
-        self.block = nn.Sequential(
-            DepthwiseSeparableConv(in_c, out_c),
-            DepthwiseSeparableConv(out_c, out_c),
-        )
-
-    def forward(self, x):
-        return self.block(x)
+    def forward(self, x: torch.Tensor, skip: torch.Tensor) -> torch.Tensor:
+        x = self.up(x)
+        # 尺寸对齐（处理奇数尺寸）
+        if x.shape[-2:] != skip.shape[-2:]:
+            x = F.interpolate(x, size=skip.shape[-2:],
+                              mode='bilinear', align_corners=False)
+        skip = self.gate(skip)
+        return self.conv(torch.cat([x, skip], dim=1))
 
 
-# ---------------------------------------------------------------------------
-# 4. 边缘感知分支 (Edge-Aware Branch)
-# ---------------------------------------------------------------------------
-
-class EdgeBranch(nn.Module):
-    """
-    独立的边缘检测分支：
-    - 从多尺度特征中提取边缘信息
-    - 使用 Sobel 先验引导学习
-    - 输出边缘概率图，用于辅助主分割分支
-    """
-
-    def __init__(self, encoder_channels):
-        super().__init__()
-        # 每个编码器层级的边缘提取头
-        self.edge_heads = nn.ModuleList()
-        for ch in encoder_channels:
-            self.edge_heads.append(nn.Sequential(
-                nn.Conv2d(ch, ch // 2, 3, padding=1, bias=False),
-                nn.BatchNorm2d(ch // 2),
-                nn.ReLU(inplace=True),
-                nn.Conv2d(ch // 2, 1, 1),
-            ))
-        # 融合多尺度边缘图
-        self.fuse = nn.Sequential(
-            nn.Conv2d(len(encoder_channels), 1, 1),
-            nn.Sigmoid(),
-        )
-
-    def forward(self, encoder_features, target_size):
-        edge_maps = []
-        for feat, head in zip(encoder_features, self.edge_heads):
-            e = head(feat)
-            e = F.interpolate(e, size=target_size, mode='bilinear', align_corners=False)
-            edge_maps.append(e)
-        fused = self.fuse(torch.cat(edge_maps, dim=1))
-        return fused
-
-
-# ---------------------------------------------------------------------------
-# 5. 主模型：AGEANet (Anti-Glare Edge-Aware Network)
-# ---------------------------------------------------------------------------
+# ============================================================
+# 6. AGEANet 标准版
+# ============================================================
 
 class AGEANet(nn.Module):
     """
-    Anti-Glare Edge-Aware Network — 高反光工件精准边缘分割网络。
+    AGEANet — 船舶大型金属高光面边缘感知分割网络（标准版）。
 
-    架构特点：
-    1. 高光抑制前端 — 可学习地检测并修复高光区域
-    2. 4 层 U-Net 编码器-解码器 + CBAM 注意力
-    3. 边缘感知分支 — 多尺度边缘检测，提供边缘先验
-    4. 双输出头 — 分割 mask + 边缘 map
-
-    输入: (B, 3, H, W) — 经 HDR 融合后的 RGB 图像
-    输出: dict {
-        'seg':   (B, 1, H, W) — 工件分割概率图
-        'edge':  (B, 1, H, W) — 边缘概率图
-        'glare': (B, 1, H, W) — 高光检测图 (训练时用于辅助监督)
-    }
+    Args:
+        in_channels:  输入通道数（默认 3，RGB）
+        out_channels: 分割输出通道数（默认 1，二值分割）
+        base_ch:      基础通道数（默认 64，控制模型容量）
     """
 
-    def __init__(self, in_channels=3, out_channels=1, base_ch=64):
+    def __init__(self, in_channels: int = 3, out_channels: int = 1,
+                 base_ch: int = 64):
         super().__init__()
-        chs = [base_ch, base_ch * 2, base_ch * 4, base_ch * 8]  # [64, 128, 256, 512]
-
-        # --- 高光抑制前端 ---
-        self.specular_suppress = SpecularSuppression(in_channels)
-
-        # --- 编码器 ---
-        self.enc1 = ConvBlock(in_channels, chs[0])
-        self.enc2 = ConvBlock(chs[0], chs[1])
-        self.enc3 = ConvBlock(chs[1], chs[2])
-        self.enc4 = ConvBlock(chs[2], chs[3])
-        self.pool = nn.MaxPool2d(2, 2)
-
-        # --- 瓶颈层 ---
-        self.bottleneck = ConvBlock(chs[3], chs[3] * 2)  # 1024
-
-        # --- 解码器 ---
-        self.up4 = nn.ConvTranspose2d(chs[3] * 2, chs[3], 2, stride=2)
-        self.dec4 = ConvBlock(chs[3] * 2, chs[3])
-        self.up3 = nn.ConvTranspose2d(chs[3], chs[2], 2, stride=2)
-        self.dec3 = ConvBlock(chs[2] * 2, chs[2])
-        self.up2 = nn.ConvTranspose2d(chs[2], chs[1], 2, stride=2)
-        self.dec2 = ConvBlock(chs[1] * 2, chs[1])
-        self.up1 = nn.ConvTranspose2d(chs[1], chs[0], 2, stride=2)
-        self.dec1 = ConvBlock(chs[0] * 2, chs[0])
-
-        # --- 分割输出头 ---
-        self.seg_head = nn.Conv2d(chs[0], out_channels, 1)
-
-        # --- 边缘感知分支 ---
-        self.edge_branch = EdgeBranch(chs)
-
-    @staticmethod
-    def _pad_to_match(x, target):
-        """确保上采样后的特征图尺寸与跳跃连接匹配。"""
-        dh = target.size(2) - x.size(2)
-        dw = target.size(3) - x.size(3)
-        if dh != 0 or dw != 0:
-            x = F.pad(x, [0, dw, 0, dh])
-        return x
-
-    def forward(self, x):
-        # 高光抑制
-        x_suppressed, glare_map = self.specular_suppress(x)
-
+        c = base_ch
         # 编码器
-        e1 = self.enc1(x_suppressed)
-        e2 = self.enc2(self.pool(e1))
-        e3 = self.enc3(self.pool(e2))
-        e4 = self.enc4(self.pool(e3))
-
+        self.enc1 = EncoderBlock(in_channels, c,      use_cbam=False)
+        self.enc2 = EncoderBlock(c,           c * 2,  use_cbam=True)
+        self.enc3 = EncoderBlock(c * 2,       c * 4,  use_cbam=True)
+        self.enc4 = EncoderBlock(c * 4,       c * 8,  use_cbam=True)
         # 瓶颈
-        b = self.bottleneck(self.pool(e4))
-
-        # 解码器 + 跳跃连接
-        d4 = self.up4(b)
-        d4 = self._pad_to_match(d4, e4)
-        d4 = self.dec4(torch.cat([d4, e4], dim=1))
-
-        d3 = self.up3(d4)
-        d3 = self._pad_to_match(d3, e3)
-        d3 = self.dec3(torch.cat([d3, e3], dim=1))
-
-        d2 = self.up2(d3)
-        d2 = self._pad_to_match(d2, e2)
-        d2 = self.dec2(torch.cat([d2, e2], dim=1))
-
-        d1 = self.up1(d2)
-        d1 = self._pad_to_match(d1, e1)
-        d1 = self.dec1(torch.cat([d1, e1], dim=1))
-
-        # 分割输出
-        seg = torch.sigmoid(self.seg_head(d1))
-
-        # 边缘分支
-        target_size = (x.size(2), x.size(3))
-        edge = self.edge_branch([e1, e2, e3, e4], target_size)
-
-        return {'seg': seg, 'edge': edge, 'glare': glare_map}
-
-
-# ---------------------------------------------------------------------------
-# 6. 轻量化变体：AGEANet-Lite (用于嵌入式 RA8P1 部署)
-# ---------------------------------------------------------------------------
-
-class AGEANetLite(nn.Module):
-    """
-    AGEANet 的轻量化版本，适合嵌入式部署 (RA8P1 + Helium)。
-    - 使用深度可分离卷积替代标准卷积
-    - 通道数减半 [32, 64, 128, 256]
-    - 去掉 CBAM 注意力 (减少计算量)
-    - 保留边缘分支 (轻量化版)
-    """
-
-    def __init__(self, in_channels=3, out_channels=1, base_ch=32):
-        super().__init__()
-        chs = [base_ch, base_ch * 2, base_ch * 4, base_ch * 8]
-
-        # 编码器
-        self.enc1 = LiteConvBlock(in_channels, chs[0])
-        self.enc2 = LiteConvBlock(chs[0], chs[1])
-        self.enc3 = LiteConvBlock(chs[1], chs[2])
-        self.enc4 = LiteConvBlock(chs[2], chs[3])
-        self.pool = nn.MaxPool2d(2, 2)
-
-        # 瓶颈
-        self.bottleneck = LiteConvBlock(chs[3], chs[3])
-
+        self.bottleneck = nn.Sequential(
+            DoubleConv(c * 8, c * 16),
+            CBAM(c * 16),
+        )
         # 解码器
-        self.up4 = nn.ConvTranspose2d(chs[3], chs[3], 2, stride=2)
-        self.dec4 = LiteConvBlock(chs[3] * 2, chs[3])
-        self.up3 = nn.ConvTranspose2d(chs[3], chs[2], 2, stride=2)
-        self.dec3 = LiteConvBlock(chs[2] * 2, chs[2])
-        self.up2 = nn.ConvTranspose2d(chs[2], chs[1], 2, stride=2)
-        self.dec2 = LiteConvBlock(chs[1] * 2, chs[1])
-        self.up1 = nn.ConvTranspose2d(chs[1], chs[0], 2, stride=2)
-        self.dec1 = LiteConvBlock(chs[0] * 2, chs[0])
-
-        # 输出头
-        self.seg_head = nn.Conv2d(chs[0], out_channels, 1)
-
-        # 轻量化边缘分支
-        self.edge_head = nn.Sequential(
-            nn.Conv2d(chs[0], chs[0] // 2, 3, padding=1, bias=False),
-            nn.BatchNorm2d(chs[0] // 2),
+        self.dec4 = DecoderBlock(c * 16, c * 8,  c * 8,  use_glare_gate=True)
+        self.dec3 = DecoderBlock(c * 8,  c * 4,  c * 4,  use_glare_gate=True)
+        self.dec2 = DecoderBlock(c * 4,  c * 2,  c * 2,  use_glare_gate=True)
+        self.dec1 = DecoderBlock(c * 2,  c,       c,      use_glare_gate=False)
+        # 输出头：语义分割
+        self.seg_head = nn.Sequential(
+            nn.Conv2d(c, c // 2, 3, padding=1, bias=False),
+            nn.BatchNorm2d(c // 2),
             nn.ReLU(inplace=True),
-            nn.Conv2d(chs[0] // 2, 1, 1),
+            nn.Conv2d(c // 2, out_channels, 1),
+            nn.Sigmoid(),
+        )
+        # 输出头：边缘检测（从 dec2 特征引出，分辨率更高）
+        self.edge_head = nn.Sequential(
+            nn.Conv2d(c * 2, c // 2, 3, padding=1, bias=False),
+            nn.BatchNorm2d(c // 2),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(c // 2, 1, 1),
+            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False),
             nn.Sigmoid(),
         )
 
-    @staticmethod
-    def _pad_to_match(x, target):
-        dh = target.size(2) - x.size(2)
-        dw = target.size(3) - x.size(3)
-        if dh != 0 or dw != 0:
-            x = F.pad(x, [0, dw, 0, dh])
-        return x
+        self._init_weights()
 
-    def forward(self, x):
-        e1 = self.enc1(x)
-        e2 = self.enc2(self.pool(e1))
-        e3 = self.enc3(self.pool(e2))
-        e4 = self.enc4(self.pool(e3))
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.ones_(m.weight)
+                nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
 
-        b = self.bottleneck(self.pool(e4))
-
-        d4 = self._pad_to_match(self.up4(b), e4)
-        d4 = self.dec4(torch.cat([d4, e4], dim=1))
-        d3 = self._pad_to_match(self.up3(d4), e3)
-        d3 = self.dec3(torch.cat([d3, e3], dim=1))
-        d2 = self._pad_to_match(self.up2(d3), e2)
-        d2 = self.dec2(torch.cat([d2, e2], dim=1))
-        d1 = self._pad_to_match(self.up1(d2), e1)
-        d1 = self.dec1(torch.cat([d1, e1], dim=1))
-
-        seg = torch.sigmoid(self.seg_head(d1))
-        edge = self.edge_head(d1)
-
+    def forward(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
+        # 编码
+        s1, p1 = self.enc1(x)
+        s2, p2 = self.enc2(p1)
+        s3, p3 = self.enc3(p2)
+        s4, p4 = self.enc4(p3)
+        # 瓶颈
+        b = self.bottleneck(p4)
+        # 解码
+        d4 = self.dec4(b,  s4)
+        d3 = self.dec3(d4, s3)
+        d2 = self.dec2(d3, s2)
+        d1 = self.dec1(d2, s1)
+        # 输出
+        seg  = self.seg_head(d1)
+        edge = self.edge_head(d2)
+        # 对齐 edge 到 seg 尺寸
+        if edge.shape[-2:] != seg.shape[-2:]:
+            edge = F.interpolate(edge, size=seg.shape[-2:],
+                                 mode='bilinear', align_corners=False)
         return {'seg': seg, 'edge': edge}
 
 
-# ---------------------------------------------------------------------------
-# 7. 向后兼容：保留 SimpleUNet 接口
-# ---------------------------------------------------------------------------
+# ============================================================
+# 7. AGEANetLite 轻量版（嵌入式部署）
+# ============================================================
 
-class SimpleUNet(AGEANet):
-    """向后兼容旧接口。内部使用 AGEANet 架构。"""
-    pass
+class AGEANetLite(nn.Module):
+    """
+    AGEANetLite — 轻量版，面向 RA8P1 (Cortex-M85 + Helium) 嵌入式部署。
+
+    相比标准版：
+    - 使用深度可分离卷积替代标准卷积
+    - 减少通道数（base_ch=32）
+    - 仅在 enc3/enc4 使用 CBAM（减少计算量）
+    - 去除高光门控（节省内存）
+    """
+
+    def __init__(self, in_channels: int = 3, out_channels: int = 1,
+                 base_ch: int = 32):
+        super().__init__()
+        c = base_ch
+        # 编码器（深度可分离卷积）
+        self.enc1 = EncoderBlock(in_channels, c,      use_cbam=False, depthwise=False)
+        self.enc2 = EncoderBlock(c,           c * 2,  use_cbam=False, depthwise=True)
+        self.enc3 = EncoderBlock(c * 2,       c * 4,  use_cbam=True,  depthwise=True)
+        self.enc4 = EncoderBlock(c * 4,       c * 8,  use_cbam=True,  depthwise=True)
+        # 瓶颈
+        self.bottleneck = DoubleConv(c * 8, c * 8, depthwise=True)
+        # 解码器
+        self.dec4 = DecoderBlock(c * 8,  c * 8, c * 4, use_glare_gate=False, depthwise=True)
+        self.dec3 = DecoderBlock(c * 4,  c * 4, c * 2, use_glare_gate=False, depthwise=True)
+        self.dec2 = DecoderBlock(c * 2,  c * 2, c,     use_glare_gate=False, depthwise=True)
+        self.dec1 = DecoderBlock(c,      c,     c,     use_glare_gate=False, depthwise=True)
+        # 输出头
+        self.seg_head = nn.Sequential(
+            nn.Conv2d(c, out_channels, 1),
+            nn.Sigmoid(),
+        )
+        # edge_head 接 dec2 输出，通道数为 c（不是 c*2）
+        self.edge_head = nn.Sequential(
+            nn.Conv2d(c, 1, 1),
+            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False),
+            nn.Sigmoid(),
+        )
+
+    def forward(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
+        s1, p1 = self.enc1(x)
+        s2, p2 = self.enc2(p1)
+        s3, p3 = self.enc3(p2)
+        s4, p4 = self.enc4(p3)
+        b  = self.bottleneck(p4)
+        d4 = self.dec4(b,  s4)
+        d3 = self.dec3(d4, s3)
+        d2 = self.dec2(d3, s2)
+        d1 = self.dec1(d2, s1)
+        seg  = self.seg_head(d1)
+        edge = self.edge_head(d2)
+        if edge.shape[-2:] != seg.shape[-2:]:
+            edge = F.interpolate(edge, size=seg.shape[-2:],
+                                 mode='bilinear', align_corners=False)
+        return {'seg': seg, 'edge': edge}
 
 
-# ---------------------------------------------------------------------------
+# ============================================================
 # 8. 推理辅助函数
-# ---------------------------------------------------------------------------
+# ============================================================
 
-def predict_contour(model, image, device, threshold=0.5):
+def predict(
+    model: nn.Module,
+    image: 'np.ndarray',
+    device: torch.device,
+    seg_threshold: float = 0.5,
+    edge_threshold: float = 0.3,
+    input_size: int = 512,
+) -> Dict[str, 'np.ndarray']:
     """
-    使用训练好的模型预测工件轮廓。
+    对单张 BGR uint8 图像进行推理。
 
-    参数:
-        model:     训练好的 AGEANet 或 AGEANetLite 模型
-        image:     BGR 格式的 numpy 图像 (H, W, 3), uint8
-        device:    torch.device
-        threshold: 二值化阈值
+    Args:
+        model:          训练好的 AGEANet / AGEANetLite
+        image:          BGR uint8 numpy 图像 (H,W,3)
+        device:         torch.device
+        seg_threshold:  分割二值化阈值
+        edge_threshold: 边缘二值化阈值
+        input_size:     推理分辨率（32 的倍数）
 
-    返回:
-        contour_mask: 二值化轮廓掩膜 (H, W), uint8, 值为 0 或 255
+    Returns:
+        {
+          'seg_prob':  float32 (H,W) 分割概率图
+          'seg_mask':  uint8  (H,W) 二值分割掩膜
+          'edge_prob': float32 (H,W) 边缘概率图
+          'edge_mask': uint8  (H,W) 二值边缘掩膜
+        }
     """
+    import numpy as np
+    import cv2
+
     model.eval()
-    h, w = image.shape[:2]
+    orig_h, orig_w = image.shape[:2]
 
-    # 预处理：归一化 + 调整尺寸到 32 的倍数
-    pad_h = (32 - h % 32) % 32
-    pad_w = (32 - w % 32) % 32
+    # 预处理
+    img_resized = cv2.resize(image, (input_size, input_size),
+                             interpolation=cv2.INTER_LINEAR)
+    img_tensor = torch.from_numpy(img_resized).permute(2, 0, 1).float() / 255.0
+    img_tensor = img_tensor.unsqueeze(0).to(device)
 
     with torch.no_grad():
-        img_tensor = torch.from_numpy(image).permute(2, 0, 1).float().unsqueeze(0) / 255.0
-        if pad_h > 0 or pad_w > 0:
-            img_tensor = F.pad(img_tensor, [0, pad_w, 0, pad_h], mode='reflect')
-        img_tensor = img_tensor.to(device)
+        out = model(img_tensor)
 
-        output = model(img_tensor)
-        seg_map = output['seg'].squeeze().cpu().numpy()
+    seg_prob  = out['seg'].squeeze().cpu().numpy()
+    edge_prob = out['edge'].squeeze().cpu().numpy()
 
-    # 裁剪回原始尺寸
-    seg_map = seg_map[:h, :w]
-    contour_mask = (seg_map > threshold).astype(np.uint8) * 255
-    return contour_mask
+    # 还原到原始尺寸
+    seg_prob  = cv2.resize(seg_prob,  (orig_w, orig_h), interpolation=cv2.INTER_LINEAR)
+    edge_prob = cv2.resize(edge_prob, (orig_w, orig_h), interpolation=cv2.INTER_LINEAR)
 
+    seg_mask  = (seg_prob  > seg_threshold).astype(np.uint8) * 255
+    edge_mask = (edge_prob > edge_threshold).astype(np.uint8) * 255
 
-def predict_edge(model, image, device, threshold=0.3):
-    """
-    使用训练好的模型预测工件边缘。
-
-    返回:
-        edge_mask: 边缘概率图 (H, W), float32, 值 [0, 1]
-    """
-    model.eval()
-    h, w = image.shape[:2]
-    pad_h = (32 - h % 32) % 32
-    pad_w = (32 - w % 32) % 32
-
-    with torch.no_grad():
-        img_tensor = torch.from_numpy(image).permute(2, 0, 1).float().unsqueeze(0) / 255.0
-        if pad_h > 0 or pad_w > 0:
-            img_tensor = F.pad(img_tensor, [0, pad_w, 0, pad_h], mode='reflect')
-        img_tensor = img_tensor.to(device)
-
-        output = model(img_tensor)
-        edge_map = output['edge'].squeeze().cpu().numpy()
-
-    edge_map = edge_map[:h, :w]
-    return edge_map
-
-
-def get_model_info(model):
-    """打印模型参数量和计算量估计。"""
-    total_params = sum(p.numel() for p in model.parameters())
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     return {
-        'total_params': total_params,
-        'trainable_params': trainable_params,
-        'total_params_mb': total_params * 4 / (1024 ** 2),  # float32
+        'seg_prob':  seg_prob,
+        'seg_mask':  seg_mask,
+        'edge_prob': edge_prob,
+        'edge_mask': edge_mask,
     }
 
 
-# ---------------------------------------------------------------------------
-# 9. 入口点
-# ---------------------------------------------------------------------------
+def get_model_info(model: nn.Module) -> Dict:
+    """返回模型参数量统计。"""
+    total     = sum(p.numel() for p in model.parameters())
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    return {
+        'total_params':     total,
+        'trainable_params': trainable,
+        'size_mb_fp32':     total * 4 / (1024 ** 2),
+        'size_mb_int8':     total / (1024 ** 2),
+    }
+
+
+# ============================================================
+# 9. 命令行入口（模型结构验证）
+# ============================================================
 
 if __name__ == "__main__":
+    import numpy as np
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"设备: {device}\n")
 
-    # 测试标准模型
-    print("=" * 60)
-    print("AGEANet (Standard) — 高反光工件边缘分割网络")
-    print("=" * 60)
-    model = AGEANet(in_channels=3, out_channels=1).to(device)
-    info = get_model_info(model)
-    print(f"  总参数量: {info['total_params']:,}")
-    print(f"  可训练参数: {info['trainable_params']:,}")
-    print(f"  模型大小 (float32): {info['total_params_mb']:.1f} MB")
+    for name, ModelClass, base_ch in [
+        ("AGEANet (标准版)",   AGEANet,     64),
+        ("AGEANetLite (轻量版)", AGEANetLite, 32),
+    ]:
+        print("=" * 56)
+        print(f"  {name}")
+        print("=" * 56)
+        model = ModelClass(in_channels=3, base_ch=base_ch).to(device)
+        info = get_model_info(model)
+        print(f"  总参数量:      {info['total_params']:>10,}")
+        print(f"  FP32 模型大小: {info['size_mb_fp32']:>8.2f} MB")
+        print(f"  INT8 模型大小: {info['size_mb_int8']:>8.2f} MB")
 
-    # 测试前向传播
-    dummy = torch.randn(1, 3, 256, 256).to(device)
-    out = model(dummy)
-    print(f"  输入尺寸: {dummy.shape}")
-    print(f"  分割输出: {out['seg'].shape}")
-    print(f"  边缘输出: {out['edge'].shape}")
-    print(f"  高光检测: {out['glare'].shape}")
+        dummy = torch.randn(1, 3, 512, 512).to(device)
+        out = model(dummy)
+        print(f"  输入:  {tuple(dummy.shape)}")
+        print(f"  seg:   {tuple(out['seg'].shape)}")
+        print(f"  edge:  {tuple(out['edge'].shape)}")
+        print()
 
-    # 测试轻量化模型
-    print("\n" + "=" * 60)
-    print("AGEANet-Lite — 嵌入式轻量化版本")
-    print("=" * 60)
-    model_lite = AGEANetLite(in_channels=3, out_channels=1).to(device)
-    info_lite = get_model_info(model_lite)
-    print(f"  总参数量: {info_lite['total_params']:,}")
-    print(f"  可训练参数: {info_lite['trainable_params']:,}")
-    print(f"  模型大小 (float32): {info_lite['total_params_mb']:.1f} MB")
-
-    out_lite = model_lite(dummy)
-    print(f"  输入尺寸: {dummy.shape}")
-    print(f"  分割输出: {out_lite['seg'].shape}")
-    print(f"  边缘输出: {out_lite['edge'].shape}")
-    print(f"\n模型架构验证通过！")
+    print("模型结构验证通过！")

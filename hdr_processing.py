@@ -1,495 +1,534 @@
 """
 hdr_processing.py — 高反光工件专用 HDR 处理与图像增强模块
 
-优化内容：
-  1. 多重曝光融合 — Mertens 算法 + 自适应权重调节
-  2. 高光检测与修复 — 自动检测过曝区域并修复
-  3. 偏振模拟 — 多帧最小值法抑制镜面反射
-  4. 自适应图像增强 — CLAHE + 引导滤波 + 自适应参数
-  5. 反光抑制管线 — 整合所有处理步骤的统一接口
+完整可运行实现，覆盖：
+  1. 多重曝光融合  — Mertens (无需曝光时间) + Debevec (需曝光时间)
+  2. 合成多曝光生成 — 从单张图像模拟多 EV 档位（测试/数据增强用）
+  3. 高光检测与修复 — 多通道过曝检测 + OpenCV inpaint / 软混合修复
+  4. 偏振模拟       — 多帧最小值法 + 双边滤波镜面/漫反射分离
+  5. 自适应增强     — CLAHE (LAB 空间) + 引导滤波 + Unsharp Mask
+  6. AntiGlarePipeline — 统一管线，支持单帧/多帧输入
+
+依赖: opencv-contrib-python>=4.5, numpy>=1.21
+运行: python3 hdr_processing.py [--input img.jpg] [--output ./out] [--debug]
 """
+
+import argparse
+import math
+import os
+from typing import Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
 
 
-# ===========================================================================
+# ---------------------------------------------------------------------------
 # 1. 多重曝光融合
-# ===========================================================================
+# ---------------------------------------------------------------------------
 
-def exposure_fusion(images, contrast_weight=1.0, saturation_weight=1.0,
-                    exposure_weight=1.0):
+def exposure_fusion_mertens(
+    images: List[np.ndarray],
+    contrast_weight: float = 1.0,
+    saturation_weight: float = 1.0,
+    exposure_weight: float = 1.0,
+) -> np.ndarray:
     """
-    使用 Mertens 算法进行多重曝光融合，支持自定义权重。
+    Mertens 多重曝光融合（无需曝光时间元数据）。
 
-    参数:
-        images:            多张不同曝光的 BGR 图像列表
-        contrast_weight:   对比度权重 (增大可增强边缘)
+    Args:
+        images:            BGR uint8 图像列表
+        contrast_weight:   对比度权重（增大可增强边缘）
         saturation_weight: 饱和度权重
         exposure_weight:   曝光适度权重
-
-    返回:
-        融合后的 8-bit BGR 图像
+    Returns:
+        融合后的 BGR uint8 图像
     """
-    if len(images) == 0:
-        raise ValueError("输入图像列表不能为空")
-
+    if not images:
+        raise ValueError("images 列表不能为空")
     if len(images) == 1:
         return images[0].copy()
 
-    # 确保所有图像尺寸一致
-    target_shape = images[0].shape
-    aligned_images = []
-    for img in images:
-        if img.shape != target_shape:
-            img = cv2.resize(img, (target_shape[1], target_shape[0]))
-        if len(img.shape) == 2:
-            img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
-        aligned_images.append(img)
-
-    merge_mertens = cv2.createMergeMertens(
-        contrast_weight, saturation_weight, exposure_weight
-    )
-    fused = merge_mertens.process(aligned_images)
-
-    # 转换为 8-bit 并处理溢出
-    fused_8bit = np.clip(fused * 255, 0, 255).astype(np.uint8)
-    return fused_8bit
-
-
-def weighted_exposure_fusion(images, exposure_times=None):
-    """
-    加权多重曝光融合 — 根据曝光时间自动调整融合权重。
-
-    如果提供了曝光时间，使用 Debevec 方法估计 HDR 辐照度图后再色调映射；
-    否则退回到 Mertens 融合。
-
-    参数:
-        images:         多张不同曝光的 BGR 图像列表
-        exposure_times: 对应的曝光时间列表 (秒)，可选
-
-    返回:
-        融合后的 8-bit BGR 图像
-    """
-    if exposure_times is None or len(exposure_times) != len(images):
-        return exposure_fusion(images)
-
-    # 确保图像为 BGR 格式
+    h0, w0 = images[0].shape[:2]
     aligned = []
     for img in images:
-        if len(img.shape) == 2:
+        if img.shape[:2] != (h0, w0):
+            img = cv2.resize(img, (w0, h0), interpolation=cv2.INTER_LINEAR)
+        if img.ndim == 2:
+            img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+        aligned.append(img)
+
+    merger = cv2.createMergeMertens(contrast_weight, saturation_weight, exposure_weight)
+    fused_f = merger.process(aligned)
+    return np.clip(fused_f * 255.0, 0, 255).astype(np.uint8)
+
+
+def exposure_fusion_debevec(
+    images: List[np.ndarray],
+    exposure_times: List[float],
+    tonemap_gamma: float = 1.5,
+) -> np.ndarray:
+    """
+    Debevec HDR 重建 + Reinhard 色调映射（需要曝光时间）。
+
+    Args:
+        images:         BGR uint8 图像列表
+        exposure_times: 对应曝光时间列表（秒）
+        tonemap_gamma:  Reinhard gamma 值
+    Returns:
+        融合后的 BGR uint8 图像
+    """
+    if len(images) != len(exposure_times):
+        raise ValueError("images 与 exposure_times 长度必须一致")
+
+    aligned = []
+    for img in images:
+        if img.ndim == 2:
             img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
         aligned.append(img)
 
     times = np.array(exposure_times, dtype=np.float32)
 
-    # Debevec 方法估计相机响应函数
     calibrate = cv2.createCalibrateDebevec()
     response = calibrate.process(aligned, times)
 
-    # 合并为 HDR 图像
-    merge = cv2.createMergeDebevec()
-    hdr = merge.process(aligned, times, response)
+    merge_hdr = cv2.createMergeDebevec()
+    hdr = merge_hdr.process(aligned, times, response)
 
-    # Reinhard 色调映射
-    tonemap = cv2.createTonemapReinhard(gamma=1.5, intensity=0, light_adapt=0.8,
-                                         color_adapt=0.0)
+    tonemap = cv2.createTonemapReinhard(
+        gamma=tonemap_gamma, intensity=0.0, light_adapt=0.8, color_adapt=0.0
+    )
     ldr = tonemap.process(hdr)
-    ldr_8bit = np.clip(ldr * 255, 0, 255).astype(np.uint8)
-
-    return ldr_8bit
+    return np.clip(ldr * 255.0, 0, 255).astype(np.uint8)
 
 
-# ===========================================================================
+def generate_synthetic_exposures(
+    image: np.ndarray,
+    ev_stops: List[float] = (-2.0, 0.0, 2.0),
+) -> Tuple[List[np.ndarray], List[float]]:
+    """
+    从单张图像合成多曝光序列（用于无真实多曝光数据时的测试/增强）。
+
+    通过 gamma 变换模拟不同 EV 档位，并加入符合实际的泊松噪声。
+
+    Args:
+        image:    BGR uint8 图像
+        ev_stops: EV 档位列表，0 = 正常曝光
+    Returns:
+        (images_list, exposure_times_list)
+    """
+    base_time = 0.01  # 10 ms 基准曝光
+    imgs_out, times_out = [], []
+    img_f = image.astype(np.float32) / 255.0
+
+    for ev in ev_stops:
+        scale = 2.0 ** ev
+        adj = np.clip(img_f * scale, 0.0, 1.0)
+        # 模拟相机 gamma 响应 (sRGB ≈ 2.2)
+        adj_gamma = np.power(np.clip(adj, 1e-6, 1.0), 1.0 / 2.2)
+        # 加入轻微泊松噪声（模拟真实传感器）
+        noisy = np.random.poisson(adj_gamma * 255.0).astype(np.float32) / 255.0
+        noisy = np.clip(noisy, 0.0, 1.0)
+        imgs_out.append((noisy * 255.0).astype(np.uint8))
+        times_out.append(float(base_time * scale))
+
+    return imgs_out, times_out
+
+
+# ---------------------------------------------------------------------------
 # 2. 高光检测与修复
-# ===========================================================================
+# ---------------------------------------------------------------------------
 
-def detect_specular_regions(image, threshold=240, min_area=50):
+def detect_highlight_mask(
+    image: np.ndarray,
+    threshold: int = 240,
+    dilate_iters: int = 2,
+) -> np.ndarray:
     """
-    检测图像中的高光 (过曝) 区域。
+    检测过曝（高光）区域，返回二值掩膜。
 
-    参数:
-        image:     BGR 图像
-        threshold: 亮度阈值 (0-255)
-        min_area:  最小高光区域面积 (像素)
+    任意通道超过 threshold 即标记为高光，并膨胀以覆盖过渡区。
 
-    返回:
-        glare_mask: 高光区域二值掩膜 (H, W), uint8
-        glare_info: 高光区域信息列表 [{center, area, bbox}]
+    Args:
+        image:        BGR uint8 图像
+        threshold:    亮度阈值 0-255
+        dilate_iters: 膨胀迭代次数
+    Returns:
+        highlight_mask: uint8 掩膜，高光区域为 255
     """
-    if len(image.shape) == 3:
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    else:
-        gray = image.copy()
+    b, g, r = cv2.split(image)
+    mask = ((b.astype(np.int32) > threshold) |
+            (g.astype(np.int32) > threshold) |
+            (r.astype(np.int32) > threshold)).astype(np.uint8) * 255
 
-    # 多通道高光检测 (任一通道过曝即为高光)
-    if len(image.shape) == 3:
-        b, g, r = cv2.split(image)
-        glare_mask = ((b > threshold) | (g > threshold) | (r > threshold)).astype(np.uint8) * 255
-    else:
-        glare_mask = (gray > threshold).astype(np.uint8) * 255
-
-    # 形态学处理：闭运算填充小孔，开运算去除噪点
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-    glare_mask = cv2.morphologyEx(glare_mask, cv2.MORPH_CLOSE, kernel)
-    glare_mask = cv2.morphologyEx(glare_mask, cv2.MORPH_OPEN, kernel)
-
-    # 提取连通域
-    contours, _ = cv2.findContours(glare_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    glare_info = []
-    filtered_mask = np.zeros_like(glare_mask)
-
-    for cnt in contours:
-        area = cv2.contourArea(cnt)
-        if area >= min_area:
-            M = cv2.moments(cnt)
-            if M['m00'] > 0:
-                cx = int(M['m10'] / M['m00'])
-                cy = int(M['m01'] / M['m00'])
-            else:
-                cx, cy = 0, 0
-            x, y, w, h = cv2.boundingRect(cnt)
-            glare_info.append({
-                'center': (cx, cy),
-                'area': area,
-                'bbox': (x, y, w, h),
-            })
-            cv2.drawContours(filtered_mask, [cnt], -1, 255, -1)
-
-    return filtered_mask, glare_info
+    # 形态学：先闭运算填孔，再膨胀扩边
+    k5 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k5)
+    if dilate_iters > 0:
+        mask = cv2.dilate(mask, k5, iterations=dilate_iters)
+    return mask
 
 
-def repair_specular_regions(image, glare_mask, method='inpaint'):
+def repair_highlight_regions(
+    image: np.ndarray,
+    mask: Optional[np.ndarray] = None,
+    threshold: int = 240,
+    method: str = 'telea',
+    inpaint_radius: int = 5,
+) -> np.ndarray:
     """
-    修复高光区域。
+    修复高光区域，用周边纹理填充。
 
-    参数:
-        image:      BGR 图像
-        glare_mask: 高光区域掩膜
-        method:     修复方法 ('inpaint', 'interpolate', 'blend')
-
-    返回:
-        修复后的图像
+    Args:
+        image:          BGR uint8 图像
+        mask:           高光掩膜（None 则自动检测）
+        threshold:      自动检测阈值
+        method:         'telea' | 'ns' | 'blend'
+        inpaint_radius: inpaint 修复半径
+    Returns:
+        修复后的 BGR uint8 图像
     """
-    if glare_mask.max() == 0:
+    if mask is None:
+        mask = detect_highlight_mask(image, threshold)
+    if mask.ndim == 3:
+        mask = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
+    if mask.max() == 0:
         return image.copy()
 
-    if method == 'inpaint':
-        # OpenCV 图像修复 (Navier-Stokes 方法)
-        repaired = cv2.inpaint(image, glare_mask, inpaintRadius=5,
-                               flags=cv2.INPAINT_NS)
-
-    elif method == 'interpolate':
-        # 使用周围像素的中值进行插值修复
-        repaired = image.copy()
-        # 膨胀高光区域获取边界
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11))
-        dilated = cv2.dilate(glare_mask, kernel)
-        border = dilated - glare_mask
-
-        # 计算边界区域的平均颜色
-        border_pixels = image[border > 0]
-        if len(border_pixels) > 0:
-            mean_color = border_pixels.mean(axis=0).astype(np.uint8)
-            repaired[glare_mask > 0] = mean_color
-
-    elif method == 'blend':
-        # 高斯模糊混合 — 用模糊版本替代高光区域
+    if method == 'blend':
+        # 软混合：用高斯模糊版本替代高光区域，边缘平滑过渡
         blurred = cv2.GaussianBlur(image, (31, 31), 0)
-        mask_float = (glare_mask / 255.0).astype(np.float32)
-        # 软边缘混合
-        mask_soft = cv2.GaussianBlur(mask_float, (15, 15), 0)
-        mask_3ch = np.stack([mask_soft] * 3, axis=-1)
-        repaired = (image.astype(np.float32) * (1 - mask_3ch) +
-                    blurred.astype(np.float32) * mask_3ch)
-        repaired = np.clip(repaired, 0, 255).astype(np.uint8)
-
+        alpha = cv2.GaussianBlur(
+            (mask / 255.0).astype(np.float32), (21, 21), 0
+        )[:, :, np.newaxis]
+        result = image.astype(np.float32) * (1.0 - alpha) + blurred.astype(np.float32) * alpha
+        return np.clip(result, 0, 255).astype(np.uint8)
     else:
-        repaired = image.copy()
+        flag = cv2.INPAINT_TELEA if method == 'telea' else cv2.INPAINT_NS
+        return cv2.inpaint(image, mask, inpaint_radius, flag)
 
-    return repaired
 
+# ---------------------------------------------------------------------------
+# 3. 偏振模拟 — 镜面反射抑制
+# ---------------------------------------------------------------------------
 
-# ===========================================================================
-# 3. 偏振模拟
-# ===========================================================================
-
-def simulate_polarization_effect(images, method='min'):
+def polarization_min_method(images: List[np.ndarray]) -> np.ndarray:
     """
-    模拟偏振效果抑制镜面反射。
+    多帧逐像素最小值法模拟偏振去反光。
 
-    参数:
-        images: 多张图像列表 (不同光照/角度)
-        method: 'min' (最小值), 'median' (中值), 'robust_min' (鲁棒最小值)
+    原理：镜面反射强度随角度剧烈变化，漫反射相对稳定；
+    取多帧最小值可有效压制高光峰值。
 
-    返回:
-        抑制反射后的图像
+    Args:
+        images: BGR uint8 图像列表（不同角度或曝光）
+    Returns:
+        去反光后的 BGR uint8 图像
     """
-    if len(images) == 0:
-        raise ValueError("输入图像列表不能为空")
+    if not images:
+        raise ValueError("images 不能为空")
     if len(images) == 1:
         return images[0].copy()
-
-    imgs_float = [img.astype(np.float32) for img in images]
-
-    if method == 'min':
-        result = np.minimum.reduce(imgs_float)
-
-    elif method == 'median':
-        stacked = np.stack(imgs_float, axis=0)
-        result = np.median(stacked, axis=0)
-
-    elif method == 'robust_min':
-        # 鲁棒最小值：去掉最大值和最小值后取平均
-        stacked = np.stack(imgs_float, axis=0)
-        if len(images) >= 3:
-            sorted_stack = np.sort(stacked, axis=0)
-            # 去掉最大和最小
-            result = sorted_stack[1:-1].mean(axis=0)
-        else:
-            result = np.minimum.reduce(imgs_float)
-
-    else:
-        result = np.minimum.reduce(imgs_float)
-
-    return np.clip(result, 0, 255).astype(np.uint8)
+    stack = np.stack([img.astype(np.float32) for img in images], axis=0)
+    return np.min(stack, axis=0).astype(np.uint8)
 
 
-# ===========================================================================
+def specular_diffuse_separation(
+    image: np.ndarray,
+    bilateral_d: int = 15,
+    sigma_color: float = 40.0,
+    sigma_space: float = 40.0,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    双边滤波镜面/漫反射分离。
+
+    漫反射 = 双边滤波低频成分；镜面反射 = 原图 - 漫反射（偏移 0.5 防负值）。
+
+    Args:
+        image:        BGR uint8 图像
+        bilateral_d:  双边滤波邻域直径
+        sigma_color:  颜色空间 sigma
+        sigma_space:  坐标空间 sigma
+    Returns:
+        (diffuse, specular) 均为 BGR uint8
+    """
+    img_f = image.astype(np.float32) / 255.0
+    diffuse_f = cv2.bilateralFilter(img_f, bilateral_d, sigma_color / 255.0, sigma_space)
+    specular_f = np.clip(img_f - diffuse_f + 0.5, 0.0, 1.0)
+    diffuse = (diffuse_f * 255.0).astype(np.uint8)
+    specular = (specular_f * 255.0).astype(np.uint8)
+    return diffuse, specular
+
+
+# ---------------------------------------------------------------------------
 # 4. 自适应图像增强
-# ===========================================================================
+# ---------------------------------------------------------------------------
 
-def adaptive_image_enhancement(image, clip_limit=None, tile_size=None,
-                                guided_radius=10, guided_eps=100):
+def apply_clahe_lab(
+    image: np.ndarray,
+    clip_limit: float = 2.0,
+    tile_grid_size: Tuple[int, int] = (8, 8),
+) -> np.ndarray:
     """
-    自适应图像增强：CLAHE + 引导滤波/双边滤波。
+    在 LAB 颜色空间 L 通道上应用 CLAHE，避免颜色失真。
 
-    优化：根据图像亮度统计自动调节 CLAHE 参数。
-
-    参数:
-        image:         BGR 图像
-        clip_limit:    CLAHE 裁剪限制 (None=自动)
-        tile_size:     CLAHE 块大小 (None=自动)
-        guided_radius: 引导滤波半径
-        guided_eps:    引导滤波正则化参数
-
-    返回:
-        增强后的图像
+    clip_limit 根据图像对比度自动微调：低对比度场景自动上调。
     """
-    # 转换到 LAB 色彩空间
     lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
-    l_channel, a_channel, b_channel = cv2.split(lab)
+    l, a, b = cv2.split(lab)
 
-    # 自适应参数计算
-    if clip_limit is None:
-        # 根据亮度通道的标准差自动调节
-        l_std = l_channel.std()
-        if l_std < 30:
-            clip_limit = 3.0   # 低对比度场景，增强更多
-        elif l_std < 60:
-            clip_limit = 2.0   # 正常场景
-        else:
-            clip_limit = 1.5   # 高对比度场景 (可能有强反光)
+    # 自适应 clip_limit：低对比度时增强更多
+    std = float(l.std())
+    auto_clip = clip_limit * max(0.5, min(2.0, 60.0 / (std + 1e-3)))
 
-    if tile_size is None:
-        h, w = l_channel.shape
-        tile_size = (max(4, w // 40), max(4, h // 40))
+    clahe = cv2.createCLAHE(clipLimit=auto_clip, tileGridSize=tile_grid_size)
+    l_eq = clahe.apply(l)
+    result = cv2.cvtColor(cv2.merge([l_eq, a, b]), cv2.COLOR_LAB2BGR)
+    return result
 
-    # CLAHE 增强
-    clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_size)
-    l_enhanced = clahe.apply(l_channel)
 
-    # 合并回 LAB 并转换回 BGR
-    lab_enhanced = cv2.merge([l_enhanced, a_channel, b_channel])
-    enhanced = cv2.cvtColor(lab_enhanced, cv2.COLOR_LAB2BGR)
+def guided_filter_opencv(
+    guide: np.ndarray,
+    src: np.ndarray,
+    radius: int = 8,
+    eps: float = 100.0,
+) -> np.ndarray:
+    """
+    边缘保持引导滤波（优先使用 ximgproc，回退到双边滤波）。
 
-    # 引导滤波 / 双边滤波 (保边去噪)
+    Args:
+        guide:  引导图像 BGR uint8
+        src:    待滤波图像 BGR uint8
+        radius: 滤波半径
+        eps:    正则化参数（越大越平滑，典型值 100-10000）
+    Returns:
+        滤波后的 BGR uint8 图像
+    """
+    g_f = guide.astype(np.float32) / 255.0
+    s_f = src.astype(np.float32) / 255.0
     try:
-        from cv2.ximgproc import guidedFilter
-        enhanced = guidedFilter(
-            guide=enhanced, src=enhanced,
-            radius=guided_radius, eps=guided_eps
-        )
-    except ImportError:
-        enhanced = cv2.bilateralFilter(enhanced, d=9, sigmaColor=75, sigmaSpace=75)
-
-    return enhanced
+        out_f = cv2.ximgproc.guidedFilter(g_f, s_f, radius, eps / (255.0 ** 2))
+    except AttributeError:
+        # ximgproc 不可用时退回双边滤波
+        out_f = cv2.bilateralFilter(s_f, radius * 2 + 1,
+                                    eps / 255.0, float(radius))
+    return np.clip(out_f * 255.0, 0, 255).astype(np.uint8)
 
 
-def enhance_for_edge_detection(image):
+def unsharp_mask(
+    image: np.ndarray,
+    ksize: int = 5,
+    sigma: float = 1.0,
+    amount: float = 1.5,
+    threshold: int = 8,
+) -> np.ndarray:
     """
-    专门为边缘检测优化的增强流程。
+    非锐化掩膜（Unsharp Mask）增强边缘细节。
 
-    步骤：
-    1. 高光检测与修复
-    2. CLAHE 增强对比度
-    3. 锐化边缘
-    4. 降噪保边
-
-    返回:
-        增强后的图像 (适合边缘检测)
+    只对差值超过 threshold 的像素进行锐化，避免噪声放大。
     """
-    # 1. 检测并修复高光
-    glare_mask, _ = detect_specular_regions(image, threshold=235)
-    if glare_mask.max() > 0:
-        image = repair_specular_regions(image, glare_mask, method='blend')
-
-    # 2. CLAHE 增强
-    image = adaptive_image_enhancement(image)
-
-    # 3. 锐化
-    kernel_sharpen = np.array([
-        [0, -1, 0],
-        [-1, 5, -1],
-        [0, -1, 0]
-    ], dtype=np.float32)
-    sharpened = cv2.filter2D(image, -1, kernel_sharpen)
-    # 混合：70% 锐化 + 30% 原图
-    image = cv2.addWeighted(sharpened, 0.7, image, 0.3, 0)
-
-    # 4. 轻微降噪
-    image = cv2.GaussianBlur(image, (3, 3), 0.5)
-
-    return image
+    blurred = cv2.GaussianBlur(image, (ksize, ksize), sigma)
+    diff = image.astype(np.int16) - blurred.astype(np.int16)
+    strong = (np.abs(diff) > threshold).astype(np.float32)
+    sharpened = image.astype(np.float32) + amount * diff * strong
+    return np.clip(sharpened, 0, 255).astype(np.uint8)
 
 
-# ===========================================================================
-# 5. 反光抑制统一管线
-# ===========================================================================
+# ---------------------------------------------------------------------------
+# 5. 完整反光抑制管线
+# ---------------------------------------------------------------------------
 
 class AntiGlarePipeline:
     """
-    反光抑制统一管线 — 整合所有 HDR 处理步骤。
+    高反光工件图像处理管线。
 
-    用法:
+    处理顺序：
+        多曝光合成 → HDR 融合 → 高光修复 → 镜面分离 → CLAHE → 引导滤波 → 锐化
+
+    Examples::
+
         pipeline = AntiGlarePipeline()
-        result = pipeline.process(raw_images)
-        # result['enhanced'] — 增强后的图像
-        # result['glare_mask'] — 高光区域掩膜
-        # result['edge_ready'] — 适合边缘检测的图像
+        # 单张图像（自动合成多曝光）
+        result = pipeline.process_single(bgr_image)
+        # 真实多曝光图像
+        result = pipeline.process_multi(images, exposure_times)
     """
 
-    def __init__(self, glare_threshold=240, repair_method='blend',
-                 use_polarization=True, polarization_method='min'):
-        self.glare_threshold = glare_threshold
+    def __init__(
+        self,
+        highlight_threshold: int = 235,
+        repair_method: str = 'telea',
+        clahe_clip: float = 2.0,
+        guided_radius: int = 8,
+        guided_eps: float = 100.0,
+        sharpen_amount: float = 1.2,
+        specular_blend: float = 0.7,
+    ):
+        self.highlight_threshold = highlight_threshold
         self.repair_method = repair_method
-        self.use_polarization = use_polarization
-        self.polarization_method = polarization_method
+        self.clahe_clip = clahe_clip
+        self.guided_radius = guided_radius
+        self.guided_eps = guided_eps
+        self.sharpen_amount = sharpen_amount
+        self.specular_blend = specular_blend
 
-    def process(self, images):
-        """
-        处理多张输入图像。
+    def process_single(
+        self,
+        image: np.ndarray,
+        ev_stops: List[float] = (-2.0, 0.0, 2.0),
+    ) -> np.ndarray:
+        """单张图像输入（自动合成多曝光序列后处理）。"""
+        imgs, times = generate_synthetic_exposures(image, ev_stops)
+        return self.process_multi(imgs, times)
 
-        参数:
-            images: BGR 图像列表 (多重曝光或多帧)
-
-        返回:
-            dict: {
-                'fused':      HDR 融合结果,
-                'enhanced':   增强后的图像,
-                'glare_mask': 高光区域掩膜,
-                'glare_info': 高光区域信息,
-                'edge_ready': 适合边缘检测的图像,
-                'polarized':  偏振模拟结果 (如果启用),
-            }
-        """
-        result = {}
-
-        # 1. 偏振模拟 (如果有多帧)
-        if self.use_polarization and len(images) > 1:
-            polarized = simulate_polarization_effect(
-                images, method=self.polarization_method
-            )
-            result['polarized'] = polarized
+    def process_multi(
+        self,
+        images: List[np.ndarray],
+        exposure_times: Optional[List[float]] = None,
+    ) -> np.ndarray:
+        """多张图像输入。"""
+        # Step 1: HDR 融合
+        if exposure_times and len(exposure_times) == len(images):
+            fused = exposure_fusion_debevec(images, exposure_times)
         else:
-            result['polarized'] = None
+            fused = exposure_fusion_mertens(images)
 
-        # 2. HDR 融合
-        fused = exposure_fusion(images)
-        result['fused'] = fused
+        # Step 2: 高光修复
+        hl_mask = detect_highlight_mask(fused, self.highlight_threshold)
+        if hl_mask.max() > 0:
+            fused = repair_highlight_regions(fused, hl_mask, method=self.repair_method)
 
-        # 3. 高光检测
-        glare_mask, glare_info = detect_specular_regions(
-            fused, threshold=self.glare_threshold
-        )
-        result['glare_mask'] = glare_mask
-        result['glare_info'] = glare_info
+        # Step 3: 镜面反射抑制（漫反射 + 原图软混合）
+        diffuse, _ = specular_diffuse_separation(fused)
+        result = cv2.addWeighted(fused, 1.0 - self.specular_blend,
+                                 diffuse, self.specular_blend, 0)
 
-        # 4. 高光修复
-        repaired = repair_specular_regions(fused, glare_mask, method=self.repair_method)
+        # Step 4: CLAHE 对比度增强
+        result = apply_clahe_lab(result, self.clahe_clip)
 
-        # 5. 自适应增强
-        enhanced = adaptive_image_enhancement(repaired)
-        result['enhanced'] = enhanced
+        # Step 5: 引导滤波（保边去噪）
+        result = guided_filter_opencv(result, result,
+                                      self.guided_radius, self.guided_eps)
 
-        # 6. 边缘检测专用增强
-        edge_ready = enhance_for_edge_detection(repaired)
-        result['edge_ready'] = edge_ready
+        # Step 6: 非锐化掩膜增强边缘
+        result = unsharp_mask(result, amount=self.sharpen_amount)
 
         return result
 
-    def process_single(self, image):
-        """处理单张图像 (无 HDR 融合)。"""
-        return self.process([image])
+    def get_debug_stages(
+        self,
+        image: np.ndarray,
+        ev_stops: List[float] = (-2.0, 0.0, 2.0),
+    ) -> Dict[str, np.ndarray]:
+        """返回各处理阶段中间结果，用于调试可视化。"""
+        stages: Dict[str, np.ndarray] = {'00_original': image.copy()}
+
+        imgs, times = generate_synthetic_exposures(image, ev_stops)
+        for i, (ev, img) in enumerate(zip(ev_stops, imgs)):
+            stages[f'01_ev{ev:+.0f}'] = img.copy()
+
+        fused = exposure_fusion_mertens(imgs)
+        stages['02_hdr_fused'] = fused.copy()
+
+        hl_mask = detect_highlight_mask(fused, self.highlight_threshold)
+        stages['03_highlight_mask'] = cv2.cvtColor(hl_mask, cv2.COLOR_GRAY2BGR)
+
+        repaired = repair_highlight_regions(fused, hl_mask, method=self.repair_method)
+        stages['04_repaired'] = repaired.copy()
+
+        diffuse, specular = specular_diffuse_separation(repaired)
+        stages['05_diffuse'] = diffuse.copy()
+        stages['06_specular'] = specular.copy()
+
+        clahe_out = apply_clahe_lab(repaired, self.clahe_clip)
+        stages['07_clahe'] = clahe_out.copy()
+
+        stages['08_final'] = self.process_single(image, ev_stops)
+        return stages
 
 
-# ===========================================================================
-# 6. 入口点
-# ===========================================================================
+# ---------------------------------------------------------------------------
+# 6. 调试可视化工具
+# ---------------------------------------------------------------------------
+
+def save_debug_grid(
+    stages: Dict[str, np.ndarray],
+    output_path: str,
+    thumb_w: int = 320,
+    thumb_h: int = 240,
+    max_cols: int = 4,
+) -> None:
+    """将各阶段图像拼成网格保存。"""
+    names = sorted(stages.keys())
+    n = len(names)
+    cols = min(n, max_cols)
+    rows = math.ceil(n / cols)
+
+    cell_h = thumb_h + 28
+    grid = np.zeros((rows * cell_h, cols * thumb_w, 3), dtype=np.uint8)
+
+    for idx, name in enumerate(names):
+        r, c = divmod(idx, cols)
+        img = stages[name]
+        if img.ndim == 2:
+            img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+        thumb = cv2.resize(img, (thumb_w, thumb_h))
+        y0, x0 = r * cell_h, c * thumb_w
+        grid[y0:y0 + thumb_h, x0:x0 + thumb_w] = thumb
+        cv2.putText(grid, name, (x0 + 4, y0 + thumb_h + 18),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.42, (200, 220, 200), 1,
+                    cv2.LINE_AA)
+
+    cv2.imwrite(output_path, grid)
+    print(f"[hdr] 调试网格已保存: {output_path}")
+
+
+# ---------------------------------------------------------------------------
+# 7. 命令行入口
+# ---------------------------------------------------------------------------
+
+def _make_test_image() -> np.ndarray:
+    """生成带高光的合成金属工件测试图像。"""
+    img = np.full((480, 640, 3), 55, dtype=np.uint8)
+    # 工件主体
+    cv2.rectangle(img, (80, 90), (560, 390), (170, 175, 185), -1)
+    cv2.rectangle(img, (80, 90), (560, 390), (90, 95, 105), 3)
+    # 模拟高光斑（多个，不同强度）
+    for (cx, cy, r, bright) in [(220, 170, 50, 255), (400, 280, 70, 248),
+                                  (310, 220, 35, 252), (480, 150, 25, 250)]:
+        for dr in range(r, 0, -4):
+            a = 1.0 - dr / r
+            v = int(bright * a + 170 * (1 - a))
+            cv2.circle(img, (cx, cy), dr, (v, v, min(v + 10, 255)), -1)
+    return img
+
 
 if __name__ == "__main__":
-    print("=" * 60)
-    print("HDR 处理与反光抑制模块测试")
-    print("=" * 60)
+    parser = argparse.ArgumentParser(description="高反光工件 HDR 处理管线")
+    parser.add_argument("--input", type=str, default=None,
+                        help="输入图像路径（不提供则使用合成测试图）")
+    parser.add_argument("--output", type=str, default="./hdr_output",
+                        help="输出目录")
+    parser.add_argument("--debug", action="store_true",
+                        help="保存各阶段调试网格图")
+    args = parser.parse_args()
 
-    # 创建模拟测试图像
-    h, w = 480, 640
-    base = np.zeros((h, w, 3), dtype=np.uint8) + 80
+    os.makedirs(args.output, exist_ok=True)
 
-    # 添加工件
-    cv2.circle(base, (320, 240), 100, (180, 180, 190), -1)
+    if args.input and os.path.exists(args.input):
+        image = cv2.imread(args.input)
+        print(f"[hdr] 加载图像: {args.input}  shape={image.shape}")
+    else:
+        print("[hdr] 使用合成测试图像")
+        image = _make_test_image()
 
-    # 模拟不同曝光
-    img_under = np.clip(base.astype(np.float32) * 0.5, 0, 255).astype(np.uint8)
-    img_normal = base.copy()
-    img_over = np.clip(base.astype(np.float32) * 1.8, 0, 255).astype(np.uint8)
-    # 添加高光斑到过曝图像
-    cv2.circle(img_over, (300, 220), 30, (255, 255, 255), -1)
-
-    images = [img_under, img_normal, img_over]
-
-    # 测试各功能
-    print("\n1. 测试曝光融合...")
-    fused = exposure_fusion(images)
-    print(f"   融合结果: {fused.shape}, dtype={fused.dtype}")
-
-    print("\n2. 测试高光检测...")
-    glare_mask, glare_info = detect_specular_regions(img_over)
-    print(f"   高光区域: {len(glare_info)} 个")
-    for info in glare_info:
-        print(f"   - 中心: {info['center']}, 面积: {info['area']}")
-
-    print("\n3. 测试高光修复...")
-    for method in ['inpaint', 'interpolate', 'blend']:
-        repaired = repair_specular_regions(img_over, glare_mask, method=method)
-        print(f"   {method}: {repaired.shape}")
-
-    print("\n4. 测试偏振模拟...")
-    for method in ['min', 'median', 'robust_min']:
-        pol = simulate_polarization_effect(images, method=method)
-        print(f"   {method}: mean={pol.mean():.1f}")
-
-    print("\n5. 测试自适应增强...")
-    enhanced = adaptive_image_enhancement(fused)
-    print(f"   增强结果: {enhanced.shape}")
-
-    print("\n6. 测试反光抑制管线...")
     pipeline = AntiGlarePipeline()
-    result = pipeline.process(images)
-    for key, val in result.items():
-        if isinstance(val, np.ndarray):
-            print(f"   {key}: {val.shape}")
-        else:
-            print(f"   {key}: {val}")
+    result = pipeline.process_single(image)
 
-    print("\nHDR 处理模块测试通过！")
+    out_img = os.path.join(args.output, "result.png")
+    cv2.imwrite(out_img, result)
+    print(f"[hdr] 处理结果: {out_img}")
+
+    if args.debug:
+        stages = pipeline.get_debug_stages(image)
+        save_debug_grid(stages, os.path.join(args.output, "debug_stages.png"))
+
+    print("[hdr] 完成。")

@@ -1,650 +1,580 @@
 """
-data_augmentation.py — 高反光工件专用数据增强管线
+data_augmentation.py — 船舶大型金属高光面专项数据增强管线
 
-核心功能：
-  1. 高光模拟 (Specular Glare Synthesis) — 在训练图像上添加逼真的高光斑
-  2. 油污/指纹模拟 — 模拟工业环境中金属表面的油污和指纹
-  3. 多光照条件模拟 — 模拟不同光源方向和强度
-  4. 金属表面纹理增强 — 模拟拉丝/磨砂/镜面等金属质感
-  5. 标准几何/颜色增强 — 翻转、旋转、亮度、对比度等
-  6. 边缘标注自动生成 — 从分割 mask 自动生成边缘 ground truth
+针对以下场景特点设计：
+  - 大面积镜面高光（钢板、甲板、上层建筑）
+  - 水面动态反射（从下方打光）
+  - 港口强侧光 / 阴天漫射 / 夜间泛光灯
+  - 焊缝、铆钉、舷窗等细小结构边缘
+  - 锈蚀、油污、水渍等表面退化
 
-所有增强均同步作用于图像和 mask，保证标注一致性。
+增强策略分类：
+  A. 几何变换   — 翻转、旋转、仿射、透视（模拟不同拍摄角度）
+  B. 光照扰动   — 随机亮度/对比度、Gamma、局部高光注入、水面反射模拟
+  C. 高光专项   — 随机高光椭圆注入、高光区域局部过曝、镜面条带
+  D. 噪声/模糊  — 高斯噪声、运动模糊、散焦模糊、JPEG 压缩
+  E. 颜色扰动   — HSV 扰动、颜色通道偏移、灰度化
+  F. 遮挡/擦除  — Random Erasing、CutOut（模拟遮挡物）
+  G. 掩膜一致性 — 所有几何变换同步作用于 mask 和 edge
+
+用法::
+
+    aug = ShipHullAugPipeline(p=0.8)
+    image_aug, mask_aug, edge_aug = aug(image, mask, edge)
+
+    # 或单独使用某个增强
+    image_aug = random_sun_glare(image, n_glares=3)
 """
+
+import math
+import random
+from typing import Optional, Tuple
 
 import cv2
 import numpy as np
-import os
-from pathlib import Path
-
-try:
-    import albumentations as A
-    from albumentations.core.transforms_interface import ImageOnlyTransform
-    HAS_ALBUMENTATIONS = True
-except ImportError:
-    HAS_ALBUMENTATIONS = False
-    print("Warning: albumentations not installed. Using basic augmentation only.")
 
 
-# ===========================================================================
-# 1. 高反光专用增强变换
-# ===========================================================================
+# ============================================================
+# 工具函数
+# ============================================================
 
-class SpecularGlareSynthesis:
+def _rng_uniform(lo: float, hi: float) -> float:
+    return random.uniform(lo, hi)
+
+
+def _rng_int(lo: int, hi: int) -> int:
+    return random.randint(lo, hi - 1)
+
+
+# ============================================================
+# A. 几何变换
+# ============================================================
+
+def random_flip(image: np.ndarray, mask: np.ndarray, edge: np.ndarray,
+                p_h: float = 0.5, p_v: float = 0.2
+                ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """随机水平/垂直翻转（船体结构左右对称，垂直翻转概率低）。"""
+    if random.random() < p_h:
+        image = cv2.flip(image, 1)
+        mask  = cv2.flip(mask,  1)
+        edge  = cv2.flip(edge,  1)
+    if random.random() < p_v:
+        image = cv2.flip(image, 0)
+        mask  = cv2.flip(mask,  0)
+        edge  = cv2.flip(edge,  0)
+    return image, mask, edge
+
+
+def random_rotate(image: np.ndarray, mask: np.ndarray, edge: np.ndarray,
+                  max_angle: float = 15.0, p: float = 0.5
+                  ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """随机小角度旋转（模拟相机倾斜）。"""
+    if random.random() >= p:
+        return image, mask, edge
+    h, w = image.shape[:2]
+    angle = _rng_uniform(-max_angle, max_angle)
+    M = cv2.getRotationMatrix2D((w / 2, h / 2), angle, 1.0)
+    image = cv2.warpAffine(image, M, (w, h), flags=cv2.INTER_LINEAR,
+                           borderMode=cv2.BORDER_REFLECT_101)
+    mask  = cv2.warpAffine(mask,  M, (w, h), flags=cv2.INTER_NEAREST,
+                           borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+    edge  = cv2.warpAffine(edge,  M, (w, h), flags=cv2.INTER_NEAREST,
+                           borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+    return image, mask, edge
+
+
+def random_scale_crop(image: np.ndarray, mask: np.ndarray, edge: np.ndarray,
+                      scale_range: Tuple[float, float] = (0.7, 1.3),
+                      p: float = 0.5
+                      ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """随机缩放后中心裁剪回原尺寸（模拟不同拍摄距离）。"""
+    if random.random() >= p:
+        return image, mask, edge
+    h, w = image.shape[:2]
+    scale = _rng_uniform(*scale_range)
+    new_h, new_w = int(h * scale), int(w * scale)
+    image_s = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+    mask_s  = cv2.resize(mask,  (new_w, new_h), interpolation=cv2.INTER_NEAREST)
+    edge_s  = cv2.resize(edge,  (new_w, new_h), interpolation=cv2.INTER_NEAREST)
+
+    def _center_crop_pad(img, th, tw):
+        ih, iw = img.shape[:2]
+        y0 = max(0, (ih - th) // 2)
+        x0 = max(0, (iw - tw) // 2)
+        cropped = img[y0:y0 + min(ih, th), x0:x0 + min(iw, tw)]
+        ch, cw = cropped.shape[:2]
+        if ch < th or cw < tw:
+            if img.ndim == 3:
+                out = np.zeros((th, tw, img.shape[2]), dtype=img.dtype)
+            else:
+                out = np.zeros((th, tw), dtype=img.dtype)
+            py, px = (th - ch) // 2, (tw - cw) // 2
+            out[py:py + ch, px:px + cw] = cropped
+            return out
+        return cropped
+
+    return (_center_crop_pad(image_s, h, w),
+            _center_crop_pad(mask_s,  h, w),
+            _center_crop_pad(edge_s,  h, w))
+
+
+def random_perspective(image: np.ndarray, mask: np.ndarray, edge: np.ndarray,
+                       distortion: float = 0.1, p: float = 0.3
+                       ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """随机透视变换（模拟斜角拍摄船体）。"""
+    if random.random() >= p:
+        return image, mask, edge
+    h, w = image.shape[:2]
+    d = distortion
+    src = np.float32([[0, 0], [w, 0], [w, h], [0, h]])
+    dst = np.float32([
+        [_rng_uniform(0, d * w),   _rng_uniform(0, d * h)],
+        [_rng_uniform((1-d)*w, w), _rng_uniform(0, d * h)],
+        [_rng_uniform((1-d)*w, w), _rng_uniform((1-d)*h, h)],
+        [_rng_uniform(0, d * w),   _rng_uniform((1-d)*h, h)],
+    ])
+    M = cv2.getPerspectiveTransform(src, dst)
+    image = cv2.warpPerspective(image, M, (w, h), flags=cv2.INTER_LINEAR,
+                                borderMode=cv2.BORDER_REFLECT_101)
+    mask  = cv2.warpPerspective(mask,  M, (w, h), flags=cv2.INTER_NEAREST,
+                                borderMode=cv2.BORDER_CONSTANT)
+    edge  = cv2.warpPerspective(edge,  M, (w, h), flags=cv2.INTER_NEAREST,
+                                borderMode=cv2.BORDER_CONSTANT)
+    return image, mask, edge
+
+
+# ============================================================
+# B. 光照扰动
+# ============================================================
+
+def random_brightness_contrast(image: np.ndarray,
+                                brightness_range: Tuple[float, float] = (-40, 40),
+                                contrast_range: Tuple[float, float] = (0.7, 1.4),
+                                p: float = 0.8) -> np.ndarray:
+    """随机亮度偏移 + 对比度缩放。"""
+    if random.random() >= p:
+        return image
+    alpha = _rng_uniform(*contrast_range)
+    beta  = _rng_uniform(*brightness_range)
+    return np.clip(image.astype(np.float32) * alpha + beta, 0, 255).astype(np.uint8)
+
+
+def random_gamma(image: np.ndarray,
+                 gamma_range: Tuple[float, float] = (0.4, 2.5),
+                 p: float = 0.6) -> np.ndarray:
     """
-    在图像上合成逼真的高光斑，模拟金属表面镜面反射。
-
-    原理：
-    - 随机生成椭圆形高光区域
-    - 使用高斯模糊产生自然的光晕效果
-    - 中心区域过曝 (饱和)，边缘渐变
-    - 支持多个高光斑叠加
+    随机 Gamma 校正（模拟不同曝光/相机响应曲线）。
+    gamma < 1 增亮（过曝），gamma > 1 压暗（欠曝）。
     """
-
-    def __init__(self, max_glares=5, intensity_range=(0.3, 1.0),
-                 size_range=(20, 150), p=0.7):
-        self.max_glares = max_glares
-        self.intensity_range = intensity_range
-        self.size_range = size_range
-        self.p = p
-
-    def __call__(self, image):
-        if np.random.random() > self.p:
-            return image
-
-        result = image.copy().astype(np.float32)
-        h, w = result.shape[:2]
-        n_glares = np.random.randint(1, self.max_glares + 1)
-
-        for _ in range(n_glares):
-            # 随机位置
-            cx = np.random.randint(0, w)
-            cy = np.random.randint(0, h)
-
-            # 随机大小和形状
-            size = np.random.randint(self.size_range[0], self.size_range[1])
-            aspect = np.random.uniform(0.5, 2.0)
-            angle = np.random.uniform(0, 360)
-
-            # 创建高光掩膜
-            glare_mask = np.zeros((h, w), dtype=np.float32)
-            axes = (int(size * aspect), size)
-            cv2.ellipse(glare_mask, (cx, cy), axes, angle, 0, 360, 1.0, -1)
-
-            # 高斯模糊产生自然渐变
-            blur_size = max(size * 2 + 1, 3)
-            if blur_size % 2 == 0:
-                blur_size += 1
-            glare_mask = cv2.GaussianBlur(glare_mask, (blur_size, blur_size), 0)
-
-            # 随机强度
-            intensity = np.random.uniform(*self.intensity_range)
-            glare_mask *= intensity
-
-            # 叠加高光 (加法混合)
-            glare_color = np.random.uniform(200, 255, 3).astype(np.float32)
-            for c in range(3):
-                result[:, :, c] += glare_mask * glare_color[c]
-
-        return np.clip(result, 0, 255).astype(np.uint8)
+    if random.random() >= p:
+        return image
+    gamma = _rng_uniform(*gamma_range)
+    lut = np.array(
+        [np.clip(((i / 255.0) ** gamma) * 255.0, 0, 255) for i in range(256)],
+        dtype=np.uint8,
+    )
+    return cv2.LUT(image, lut)
 
 
-class OilStainSynthesis:
+def random_shadow(image: np.ndarray,
+                  n_shadows: int = 2,
+                  shadow_dim: float = 0.5,
+                  p: float = 0.4) -> np.ndarray:
+    """随机多边形阴影（模拟港口建筑、吊机遮挡产生的阴影）。"""
+    if random.random() >= p:
+        return image
+    h, w = image.shape[:2]
+    result = image.astype(np.float32)
+    for _ in range(random.randint(1, n_shadows)):
+        x1 = _rng_int(0, w)
+        y1 = _rng_int(0, h // 2)
+        x2 = _rng_int(0, w)
+        pts = np.array([[x1, y1], [x2, h],
+                        [x2 + _rng_int(-w//4, w//4), h],
+                        [x1 + _rng_int(-w//4, w//4), y1]], dtype=np.int32)
+        smask = np.zeros((h, w), dtype=np.float32)
+        cv2.fillPoly(smask, [pts], 1.0)
+        smask = cv2.GaussianBlur(smask, (0, 0), 20.0)
+        result *= (1.0 - smask[:, :, np.newaxis] * _rng_uniform(shadow_dim * 0.5, shadow_dim))
+    return np.clip(result, 0, 255).astype(np.uint8)
+
+
+def random_water_reflection_band(image: np.ndarray, p: float = 0.4) -> np.ndarray:
+    """在图像下半部分注入水面反射光带（蓝白色波纹高光）。"""
+    if random.random() >= p:
+        return image
+    h, w = image.shape[:2]
+    result = image.astype(np.float32)
+    xs = np.linspace(0, _rng_uniform(4, 12) * math.pi, w, dtype=np.float32)
+    wave = (np.sin(xs + _rng_uniform(0, math.pi)) + 1.0) / 2.0
+    y_weight = np.linspace(0.0, 1.0, h, dtype=np.float32)
+    y_weight[:h // 2] = 0.0
+    intensity = wave[np.newaxis, :] * y_weight[:, np.newaxis] * _rng_uniform(0.3, 0.8)
+    result[:, :, 0] += intensity * 180
+    result[:, :, 1] += intensity * 165
+    result[:, :, 2] += intensity * 130
+    return np.clip(result, 0, 255).astype(np.uint8)
+
+
+# ============================================================
+# C. 高光专项增强
+# ============================================================
+
+def random_sun_glare(image: np.ndarray,
+                     n_glares: int = 4,
+                     p: float = 0.6) -> np.ndarray:
     """
-    模拟金属表面油污和指纹。
-
-    原理：
-    - 使用 Perlin 噪声或随机多边形生成不规则形状
-    - 降低局部对比度和饱和度
-    - 添加轻微的颜色偏移 (偏黄/偏暗)
+    随机注入椭圆形镜面高光斑（模拟大型钢板镜面反射）。
+    每个高光斑：随机位置、大小、方向、亮度，高斯软边缘。
     """
-
-    def __init__(self, max_stains=3, opacity_range=(0.1, 0.4), p=0.5):
-        self.max_stains = max_stains
-        self.opacity_range = opacity_range
-        self.p = p
-
-    def __call__(self, image):
-        if np.random.random() > self.p:
-            return image
-
-        result = image.copy().astype(np.float32)
-        h, w = result.shape[:2]
-        n_stains = np.random.randint(1, self.max_stains + 1)
-
-        for _ in range(n_stains):
-            # 生成随机多边形油污区域
-            n_points = np.random.randint(5, 12)
-            cx, cy = np.random.randint(0, w), np.random.randint(0, h)
-            radius = np.random.randint(30, min(h, w) // 3)
-            angles = np.sort(np.random.uniform(0, 2 * np.pi, n_points))
-            radii = radius * np.random.uniform(0.5, 1.5, n_points)
-            points = np.array([
-                [int(cx + r * np.cos(a)), int(cy + r * np.sin(a))]
-                for a, r in zip(angles, radii)
-            ])
-
-            stain_mask = np.zeros((h, w), dtype=np.float32)
-            cv2.fillPoly(stain_mask, [points], 1.0)
-            stain_mask = cv2.GaussianBlur(stain_mask, (21, 21), 0)
-
-            opacity = np.random.uniform(*self.opacity_range)
-            stain_mask *= opacity
-
-            # 油污效果：降低亮度 + 偏黄色
-            stain_color = np.array([0.85, 0.90, 0.75], dtype=np.float32)  # BGR 偏黄暗
-            for c in range(3):
-                result[:, :, c] = result[:, :, c] * (1 - stain_mask) + \
-                                  result[:, :, c] * stain_color[c] * stain_mask
-
-        return np.clip(result, 0, 255).astype(np.uint8)
+    if random.random() >= p:
+        return image
+    h, w = image.shape[:2]
+    result = image.astype(np.float32)
+    for _ in range(_rng_int(1, n_glares + 1)):
+        cx = _rng_int(w // 6, 5 * w // 6)
+        cy = _rng_int(h // 6, 5 * h // 6)
+        ax = _rng_int(20, min(w // 3, 150))
+        ay = _rng_int(10, min(h // 4, 80))
+        rot = _rng_uniform(0, 180)
+        bright = _rng_uniform(180, 255)
+        glare = np.zeros((h, w), dtype=np.float32)
+        cv2.ellipse(glare, (cx, cy), (ax, ay), rot, 0, 360, bright, -1, cv2.LINE_AA)
+        glare = cv2.GaussianBlur(glare, (0, 0), max(ax, ay) * _rng_uniform(0.3, 0.6))
+        result[:, :, 0] += glare * _rng_uniform(0.85, 1.0)
+        result[:, :, 1] += glare * _rng_uniform(0.85, 1.0)
+        result[:, :, 2] += glare * _rng_uniform(0.80, 0.95)
+    return np.clip(result, 0, 255).astype(np.uint8)
 
 
-class DirectionalLighting:
+def random_specular_stripe(image: np.ndarray, p: float = 0.3) -> np.ndarray:
+    """随机镜面条带高光（模拟圆柱形管道、船舷弧面的线性高光）。"""
+    if random.random() >= p:
+        return image
+    h, w = image.shape[:2]
+    result = image.astype(np.float32)
+    for _ in range(_rng_int(1, 4)):
+        x0, y0 = _rng_int(0, w), _rng_int(0, h)
+        x1, y1 = _rng_int(0, w), _rng_int(0, h)
+        width = _rng_int(3, 20)
+        bright = _rng_uniform(160, 255)
+        stripe = np.zeros((h, w), dtype=np.float32)
+        cv2.line(stripe, (x0, y0), (x1, y1), bright, width, cv2.LINE_AA)
+        stripe = cv2.GaussianBlur(stripe, (0, 0), width * 0.5)
+        result[:, :, 0] += stripe * 0.95
+        result[:, :, 1] += stripe * 0.95
+        result[:, :, 2] += stripe * 0.90
+    return np.clip(result, 0, 255).astype(np.uint8)
+
+
+def simulate_overexposure_region(image: np.ndarray, p: float = 0.3) -> np.ndarray:
+    """模拟局部过曝（像素值饱和到 255，丢失纹理细节）。"""
+    if random.random() >= p:
+        return image
+    h, w = image.shape[:2]
+    cx, cy = _rng_int(w // 5, 4 * w // 5), _rng_int(h // 5, 4 * h // 5)
+    rx, ry = _rng_int(15, w // 4), _rng_int(10, h // 4)
+    oe_mask = np.zeros((h, w), dtype=np.float32)
+    cv2.ellipse(oe_mask, (cx, cy), (rx, ry), _rng_uniform(0, 180),
+                0, 360, 1.0, -1, cv2.LINE_AA)
+    oe_mask = cv2.GaussianBlur(oe_mask, (0, 0), max(rx, ry) * 0.4)
+    result = image.astype(np.float32) + oe_mask[:, :, np.newaxis] * _rng_uniform(80, 180)
+    return np.clip(result, 0, 255).astype(np.uint8)
+
+
+# ============================================================
+# D. 噪声与模糊
+# ============================================================
+
+def random_gaussian_noise(image: np.ndarray,
+                           std_range: Tuple[float, float] = (2.0, 18.0),
+                           p: float = 0.5) -> np.ndarray:
+    """高斯噪声（传感器热噪声，夜间/长曝光场景更强）。"""
+    if random.random() >= p:
+        return image
+    std = _rng_uniform(*std_range)
+    noise = np.random.normal(0, std, image.shape).astype(np.float32)
+    return np.clip(image.astype(np.float32) + noise, 0, 255).astype(np.uint8)
+
+
+def random_motion_blur(image: np.ndarray, max_ksize: int = 21, p: float = 0.2) -> np.ndarray:
+    """运动模糊（船体振动 / 相机抖动）。"""
+    if random.random() >= p:
+        return image
+    ksize = _rng_int(5, max_ksize + 1) | 1  # 保证奇数
+    angle = _rng_uniform(0, 180)
+    kernel = np.zeros((ksize, ksize), dtype=np.float32)
+    cx = cy = ksize // 2
+    rad = math.radians(angle)
+    for i in range(ksize):
+        t = i - cx
+        px = int(round(cx + t * math.cos(rad)))
+        py = int(round(cy + t * math.sin(rad)))
+        if 0 <= px < ksize and 0 <= py < ksize:
+            kernel[py, px] = 1.0
+    s = kernel.sum()
+    if s > 0:
+        kernel /= s
+    return cv2.filter2D(image, -1, kernel)
+
+
+def random_defocus_blur(image: np.ndarray, max_radius: int = 8, p: float = 0.15) -> np.ndarray:
+    """散焦模糊（圆形核，模拟景深外区域）。"""
+    if random.random() >= p:
+        return image
+    r = _rng_int(2, max_radius + 1)
+    ksize = 2 * r + 1
+    kernel = np.zeros((ksize, ksize), dtype=np.float32)
+    cv2.circle(kernel, (r, r), r, 1.0, -1)
+    kernel /= kernel.sum()
+    return cv2.filter2D(image, -1, kernel)
+
+
+def random_jpeg_compression(image: np.ndarray,
+                             quality_range: Tuple[int, int] = (55, 90),
+                             p: float = 0.25) -> np.ndarray:
+    """JPEG 压缩伪影（模拟视频流传输损失）。"""
+    if random.random() >= p:
+        return image
+    q = _rng_int(*quality_range)
+    _, enc = cv2.imencode('.jpg', image, [int(cv2.IMWRITE_JPEG_QUALITY), q])
+    return cv2.imdecode(enc, cv2.IMREAD_COLOR)
+
+
+# ============================================================
+# E. 颜色扰动
+# ============================================================
+
+def random_hsv_jitter(image: np.ndarray,
+                      hue_shift: float = 10.0,
+                      sat_scale: Tuple[float, float] = (0.6, 1.4),
+                      val_scale: Tuple[float, float] = (0.7, 1.3),
+                      p: float = 0.6) -> np.ndarray:
+    """HSV 空间随机扰动（色相偏移 + 饱和度/亮度缩放）。"""
+    if random.random() >= p:
+        return image
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV).astype(np.float32)
+    hsv[:, :, 0] = (hsv[:, :, 0] + _rng_uniform(-hue_shift, hue_shift)) % 180
+    hsv[:, :, 1] = np.clip(hsv[:, :, 1] * _rng_uniform(*sat_scale), 0, 255)
+    hsv[:, :, 2] = np.clip(hsv[:, :, 2] * _rng_uniform(*val_scale), 0, 255)
+    return cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
+
+
+def random_channel_shift(image: np.ndarray,
+                          shift_range: float = 20.0,
+                          p: float = 0.3) -> np.ndarray:
+    """随机通道偏移（模拟不同色温光源）。"""
+    if random.random() >= p:
+        return image
+    result = image.astype(np.float32)
+    for c in range(3):
+        result[:, :, c] += _rng_uniform(-shift_range, shift_range)
+    return np.clip(result, 0, 255).astype(np.uint8)
+
+
+def random_grayscale(image: np.ndarray, p: float = 0.05) -> np.ndarray:
+    """随机转为灰度三通道（模拟黑白相机）。"""
+    if random.random() >= p:
+        return image
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    return cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+
+
+# ============================================================
+# F. 遮挡 / 环境
+# ============================================================
+
+def random_erasing(image: np.ndarray,
+                   n_patches: int = 3,
+                   patch_ratio: float = 0.1,
+                   p: float = 0.3) -> np.ndarray:
+    """Random Erasing / CutOut（模拟遮挡物：绳索、设备、人员）。"""
+    if random.random() >= p:
+        return image
+    h, w = image.shape[:2]
+    result = image.copy()
+    for _ in range(_rng_int(1, n_patches + 1)):
+        ph = int(h * _rng_uniform(0.02, patch_ratio))
+        pw = int(w * _rng_uniform(0.02, patch_ratio))
+        y0 = _rng_int(0, h - ph)
+        x0 = _rng_int(0, w - pw)
+        result[y0:y0 + ph, x0:x0 + pw] = (
+            _rng_int(0, 256), _rng_int(0, 256), _rng_int(0, 256)
+        )
+    return result
+
+
+def random_fog(image: np.ndarray, p: float = 0.15) -> np.ndarray:
+    """随机雾/霾效果（港口常见海雾，降低能见度，高光扩散）。"""
+    if random.random() >= p:
+        return image
+    h, w = image.shape[:2]
+    fog_intensity = _rng_uniform(0.2, 0.6)
+    fog_color = np.array([220, 225, 230], dtype=np.float32)
+    result = image.astype(np.float32)
+    y_weight = np.linspace(fog_intensity, fog_intensity * 0.3, h,
+                           dtype=np.float32)[:, np.newaxis]
+    result = result * (1 - y_weight) + fog_color * y_weight
+    return np.clip(result, 0, 255).astype(np.uint8)
+
+
+# ============================================================
+# G. 边缘标注辅助函数
+# ============================================================
+
+def generate_edge_from_mask(mask: np.ndarray, edge_width: int = 3) -> np.ndarray:
     """
-    模拟不同方向的光照条件。
+    从分割掩膜自动生成边缘 ground truth（膨胀 - 腐蚀）。
 
-    原理：
-    - 创建线性渐变光照图
-    - 模拟从不同角度照射的效果
-    - 可叠加环境光和点光源
-    """
-
-    def __init__(self, intensity_range=(0.5, 1.5), p=0.6):
-        self.intensity_range = intensity_range
-        self.p = p
-
-    def __call__(self, image):
-        if np.random.random() > self.p:
-            return image
-
-        result = image.copy().astype(np.float32)
-        h, w = result.shape[:2]
-
-        # 随机光照方向
-        angle = np.random.uniform(0, 2 * np.pi)
-        x = np.linspace(-1, 1, w)
-        y = np.linspace(-1, 1, h)
-        xx, yy = np.meshgrid(x, y)
-
-        # 方向性光照渐变
-        gradient = np.cos(angle) * xx + np.sin(angle) * yy
-        gradient = (gradient - gradient.min()) / (gradient.max() - gradient.min() + 1e-8)
-
-        # 映射到强度范围
-        low, high = self.intensity_range
-        light_map = low + gradient * (high - low)
-
-        # 可选：添加随机点光源
-        if np.random.random() > 0.5:
-            px, py = np.random.randint(0, w), np.random.randint(0, h)
-            dist = np.sqrt((xx * w / 2 - px + w / 2) ** 2 + (yy * h / 2 - py + h / 2) ** 2)
-            point_light = np.exp(-dist ** 2 / (2 * (min(h, w) * 0.3) ** 2))
-            light_map += point_light * np.random.uniform(0.2, 0.5)
-
-        for c in range(3):
-            result[:, :, c] *= light_map
-
-        return np.clip(result, 0, 255).astype(np.uint8)
-
-
-class MetalTextureSynthesis:
-    """
-    模拟金属表面纹理 (拉丝/磨砂效果)。
-
-    原理：
-    - 生成方向性噪声模拟拉丝纹理
-    - 叠加细微的高频噪声模拟磨砂质感
-    """
-
-    def __init__(self, intensity_range=(0.02, 0.08), p=0.4):
-        self.intensity_range = intensity_range
-        self.p = p
-
-    def __call__(self, image):
-        if np.random.random() > self.p:
-            return image
-
-        result = image.copy().astype(np.float32)
-        h, w = result.shape[:2]
-        intensity = np.random.uniform(*self.intensity_range)
-
-        # 拉丝纹理：方向性噪声
-        if np.random.random() > 0.5:
-            angle = np.random.uniform(0, 180)
-            noise = np.random.randn(h, w).astype(np.float32)
-            # 方向性模糊
-            ksize = np.random.choice([15, 21, 31])
-            kernel = np.zeros((ksize, ksize), dtype=np.float32)
-            kernel[ksize // 2, :] = 1.0 / ksize
-            M = cv2.getRotationMatrix2D((float(ksize // 2), float(ksize // 2)), angle, 1.0)
-            kernel = cv2.warpAffine(kernel, M, (ksize, ksize))
-            noise = cv2.filter2D(noise, -1, kernel)
-        else:
-            # 磨砂纹理：均匀细噪声
-            noise = np.random.randn(h, w).astype(np.float32) * 0.5
-
-        noise *= intensity * 255
-        for c in range(3):
-            result[:, :, c] += noise
-
-        return np.clip(result, 0, 255).astype(np.uint8)
-
-
-# ===========================================================================
-# 2. 边缘标注自动生成
-# ===========================================================================
-
-def generate_edge_from_mask(mask, edge_width=3):
-    """
-    从分割 mask 自动生成边缘 ground truth。
-
-    参数:
-        mask:       二值分割掩膜 (H, W), uint8, 值 0/255
-        edge_width: 边缘宽度 (像素)
-
-    返回:
-        edge_mask:  边缘掩膜 (H, W), uint8, 值 0/255
+    Args:
+        mask:       二值分割掩膜 (H,W) uint8
+        edge_width: 边缘宽度（像素）
+    Returns:
+        edge_mask: 边缘掩膜 (H,W) uint8，边缘处为 255
     """
     if mask.max() <= 1:
         mask = (mask * 255).astype(np.uint8)
-
-    # 膨胀 - 腐蚀 = 边缘
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (edge_width, edge_width))
     dilated = cv2.dilate(mask, kernel, iterations=1)
-    eroded = cv2.erode(mask, kernel, iterations=1)
-    edge = dilated - eroded
-
-    return edge
+    eroded  = cv2.erode(mask,  kernel, iterations=1)
+    return (dilated.astype(np.int16) - eroded.astype(np.int16)).clip(0, 255).astype(np.uint8)
 
 
-def generate_sobel_edge(image):
+def generate_sobel_edge(image: np.ndarray) -> np.ndarray:
     """
-    使用 Sobel 算子生成边缘先验图 (用于训练时的辅助监督)。
+    Sobel 边缘先验图（用于训练时辅助监督）。
 
-    返回:
-        sobel_edge: 归一化的 Sobel 边缘图 (H, W), float32, 值 [0, 1]
+    Returns:
+        float32 [0,1] 归一化边缘强度图
     """
-    if len(image.shape) == 3:
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    else:
-        gray = image
-
-    sobelx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
-    sobely = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
-    magnitude = np.sqrt(sobelx ** 2 + sobely ** 2)
-
-    # 归一化到 [0, 1]
-    if magnitude.max() > 0:
-        magnitude = magnitude / magnitude.max()
-
-    return magnitude.astype(np.float32)
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
+    sx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
+    sy = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
+    mag = np.sqrt(sx ** 2 + sy ** 2)
+    if mag.max() > 0:
+        mag /= mag.max()
+    return mag.astype(np.float32)
 
 
-# ===========================================================================
-# 3. 组合增强管线
-# ===========================================================================
+# ============================================================
+# H. 完整增强管线
+# ============================================================
 
-class HighReflectivityAugPipeline:
+class ShipHullAugPipeline:
     """
-    高反光工件专用数据增强管线。
+    船舶船体视觉检测专用数据增强管线。
 
-    整合所有自定义增强和标准增强，提供统一的调用接口。
-    同步处理图像、分割 mask 和边缘 mask。
+    所有几何变换同步作用于 image / mask / edge，
+    光照/噪声/颜色扰动只作用于 image。
 
-    用法:
-        pipeline = HighReflectivityAugPipeline(mode='train', img_size=256)
-        augmented = pipeline(image=img, mask=seg_mask)
-        # augmented['image'], augmented['mask'], augmented['edge_mask']
+    Args:
+        p: 整体增强概率（0=不增强，1=每次都增强）
+
+    Examples::
+
+        aug = ShipHullAugPipeline(p=0.9)
+        img_a, msk_a, edg_a = aug(image, mask, edge)
     """
 
-    def __init__(self, mode='train', img_size=256):
-        self.mode = mode
-        self.img_size = img_size
+    def __init__(self, p: float = 0.85):
+        self.p = p
 
-        # 高反光专用增强
-        self.specular = SpecularGlareSynthesis(max_glares=5, p=0.7)
-        self.oil_stain = OilStainSynthesis(max_stains=3, p=0.5)
-        self.lighting = DirectionalLighting(p=0.6)
-        self.metal_texture = MetalTextureSynthesis(p=0.4)
+    def __call__(
+        self,
+        image: np.ndarray,
+        mask: Optional[np.ndarray] = None,
+        edge: Optional[np.ndarray] = None,
+    ) -> Tuple[np.ndarray, Optional[np.ndarray], Optional[np.ndarray]]:
 
-    def __call__(self, image, mask):
-        """
-        参数:
-            image: BGR 图像 (H, W, 3), uint8
-            mask:  分割掩膜 (H, W), uint8, 值 0/255
+        if random.random() >= self.p:
+            return image, mask, edge
 
-        返回:
-            dict: {
-                'image': 增强后的图像,
-                'mask':  增强后的分割掩膜,
-                'edge_mask': 自动生成的边缘掩膜
-            }
-        """
-        if self.mode == 'train':
-            result = self._train_augment(image, mask)
-        else:
-            result = self._val_augment(image, mask)
-
-        # 自动生成边缘标注
-        result['edge_mask'] = generate_edge_from_mask(result['mask'])
-
-        return result
-
-    def _train_augment(self, image, mask):
-        """训练阶段增强：包含所有增强操作。"""
-
-        # --- 几何增强 (同步作用于 image 和 mask) ---
-        # 随机水平翻转
-        if np.random.random() > 0.5:
-            image = cv2.flip(image, 1)
-            mask = cv2.flip(mask, 1)
-
-        # 随机垂直翻转
-        if np.random.random() > 0.5:
-            image = cv2.flip(image, 0)
-            mask = cv2.flip(mask, 0)
-
-        # 随机旋转 (0/90/180/270 度)
-        k = np.random.randint(0, 4)
-        if k > 0:
-            image = np.rot90(image, k).copy()
-            mask = np.rot90(mask, k).copy()
-
-        # 随机仿射变换 (小幅度)
-        if np.random.random() > 0.5:
-            h, w = image.shape[:2]
-            angle = np.random.uniform(-15, 15)
-            scale = np.random.uniform(0.85, 1.15)
-            M = cv2.getRotationMatrix2D((w / 2, h / 2), angle, scale)
-            image = cv2.warpAffine(image, M, (w, h), borderMode=cv2.BORDER_REFLECT)
-            mask = cv2.warpAffine(mask, M, (w, h), borderMode=cv2.BORDER_CONSTANT)
-
-        # 随机裁剪 + 缩放
-        image, mask = self._random_crop_resize(image, mask)
-
-        # --- 高反光专用增强 (仅作用于 image) ---
-        image = self.specular(image)
-        image = self.oil_stain(image)
-        image = self.lighting(image)
-        image = self.metal_texture(image)
-
-        # --- 颜色增强 ---
-        # 随机亮度
-        if np.random.random() > 0.5:
-            factor = np.random.uniform(0.7, 1.3)
-            image = np.clip(image.astype(np.float32) * factor, 0, 255).astype(np.uint8)
-
-        # 随机对比度
-        if np.random.random() > 0.5:
-            factor = np.random.uniform(0.7, 1.3)
-            mean = image.mean()
-            image = np.clip((image.astype(np.float32) - mean) * factor + mean, 0, 255).astype(np.uint8)
-
-        # 随机高斯噪声
-        if np.random.random() > 0.5:
-            sigma = np.random.uniform(3, 15)
-            noise = np.random.randn(*image.shape) * sigma
-            image = np.clip(image.astype(np.float32) + noise, 0, 255).astype(np.uint8)
-
-        # 随机高斯模糊
-        if np.random.random() > 0.3:
-            ksize = np.random.choice([3, 5, 7])
-            image = cv2.GaussianBlur(image, (ksize, ksize), 0)
-
-        return {'image': image, 'mask': mask}
-
-    def _val_augment(self, image, mask):
-        """验证阶段增强：仅缩放到目标尺寸。"""
-        image = cv2.resize(image, (self.img_size, self.img_size))
-        mask = cv2.resize(mask, (self.img_size, self.img_size), interpolation=cv2.INTER_NEAREST)
-        return {'image': image, 'mask': mask}
-
-    def _random_crop_resize(self, image, mask):
-        """随机裁剪并缩放到目标尺寸。"""
         h, w = image.shape[:2]
-        target = self.img_size
+        _mask = mask if mask is not None else np.zeros((h, w), dtype=np.uint8)
+        _edge = edge if edge is not None else np.zeros((h, w), dtype=np.uint8)
 
-        # 随机裁剪比例
-        crop_ratio = np.random.uniform(0.7, 1.0)
-        crop_h = int(h * crop_ratio)
-        crop_w = int(w * crop_ratio)
+        # ---- A. 几何变换（image + mask + edge 同步）----
+        image, _mask, _edge = random_flip(image, _mask, _edge)
+        image, _mask, _edge = random_rotate(image, _mask, _edge, max_angle=12, p=0.4)
+        image, _mask, _edge = random_scale_crop(image, _mask, _edge, p=0.4)
+        image, _mask, _edge = random_perspective(image, _mask, _edge, distortion=0.08, p=0.25)
 
-        # 随机裁剪位置
-        y = np.random.randint(0, max(h - crop_h, 1))
-        x = np.random.randint(0, max(w - crop_w, 1))
+        # ---- B. 光照扰动（仅 image）----
+        image = random_brightness_contrast(image, p=0.75)
+        image = random_gamma(image, gamma_range=(0.45, 2.2), p=0.55)
+        image = random_shadow(image, p=0.35)
+        image = random_water_reflection_band(image, p=0.35)
 
-        image = image[y:y + crop_h, x:x + crop_w]
-        mask = mask[y:y + crop_h, x:x + crop_w]
+        # ---- C. 高光专项（仅 image）----
+        image = random_sun_glare(image, n_glares=4, p=0.55)
+        image = random_specular_stripe(image, p=0.25)
+        image = simulate_overexposure_region(image, p=0.25)
 
-        # 缩放到目标尺寸
-        image = cv2.resize(image, (target, target))
-        mask = cv2.resize(mask, (target, target), interpolation=cv2.INTER_NEAREST)
+        # ---- D. 噪声/模糊（仅 image）----
+        image = random_gaussian_noise(image, p=0.5)
+        image = random_motion_blur(image, p=0.18)
+        image = random_defocus_blur(image, p=0.12)
+        image = random_jpeg_compression(image, p=0.22)
 
-        return image, mask
+        # ---- E. 颜色扰动（仅 image）----
+        image = random_hsv_jitter(image, p=0.55)
+        image = random_channel_shift(image, p=0.25)
+        image = random_grayscale(image, p=0.04)
 
+        # ---- F. 遮挡/环境（仅 image）----
+        image = random_erasing(image, p=0.25)
+        image = random_fog(image, p=0.12)
 
-# ===========================================================================
-# 4. 合成数据生成器 (用于无真实数据时的冷启动训练)
-# ===========================================================================
-
-class SyntheticMetalWorkpieceGenerator:
-    """
-    合成高反光金属工件训练数据生成器。
-
-    在没有真实数据时，可以生成合成训练数据进行冷启动训练。
-    生成的数据包含：
-    - 各种形状的金属工件 (圆形、矩形、多边形、环形)
-    - 金属质感的表面纹理
-    - 随机高光斑和反射
-    - 对应的分割 mask 和边缘 mask
-    """
-
-    def __init__(self, img_size=256, min_objects=1, max_objects=5):
-        self.img_size = img_size
-        self.min_objects = min_objects
-        self.max_objects = max_objects
-
-    def generate(self):
-        """
-        生成一组合成训练数据。
-
-        返回:
-            dict: {
-                'image': 合成图像 (H, W, 3), uint8
-                'mask':  分割掩膜 (H, W), uint8
-                'edge_mask': 边缘掩膜 (H, W), uint8
-            }
-        """
-        size = self.img_size
-        image = self._create_background(size)
-        mask = np.zeros((size, size), dtype=np.uint8)
-
-        n_objects = np.random.randint(self.min_objects, self.max_objects + 1)
-
-        for _ in range(n_objects):
-            obj_img, obj_mask = self._create_metal_workpiece(size)
-            # 叠加到场景中
-            blend_mask = obj_mask.astype(np.float32) / 255.0
-            for c in range(3):
-                image[:, :, c] = (image[:, :, c] * (1 - blend_mask) +
-                                  obj_img[:, :, c] * blend_mask).astype(np.uint8)
-            mask = np.maximum(mask, obj_mask)
-
-        # 添加高光和环境效果
-        image = SpecularGlareSynthesis(max_glares=3, p=0.8)(image)
-        image = DirectionalLighting(p=0.7)(image)
-        image = MetalTextureSynthesis(p=0.5)(image)
-
-        # 添加噪声
-        noise = np.random.randn(*image.shape) * np.random.uniform(3, 10)
-        image = np.clip(image.astype(np.float32) + noise, 0, 255).astype(np.uint8)
-
-        edge_mask = generate_edge_from_mask(mask)
-
-        return {'image': image, 'mask': mask, 'edge_mask': edge_mask}
-
-    def _create_background(self, size):
-        """创建工业传送带/工作台背景。"""
-        bg_type = np.random.choice(['uniform', 'gradient', 'textured'])
-
-        if bg_type == 'uniform':
-            base_val = np.random.randint(30, 80)
-            bg = np.full((size, size, 3), base_val, dtype=np.uint8)
-            # 添加轻微颜色变化
-            bg = bg.astype(np.int16)
-            bg[:, :, 0] += np.random.randint(-10, 10)
-            bg[:, :, 1] += np.random.randint(-10, 10)
-            bg[:, :, 2] += np.random.randint(-10, 10)
-            bg = np.clip(bg, 0, 255).astype(np.uint8)
-        elif bg_type == 'gradient':
-            bg = np.zeros((size, size, 3), dtype=np.uint8)
-            for c in range(3):
-                start = np.random.randint(30, 70)
-                end = np.random.randint(50, 90)
-                if np.random.random() > 0.5:
-                    gradient = np.linspace(start, end, size).reshape(1, -1)
-                else:
-                    gradient = np.linspace(start, end, size).reshape(-1, 1)
-                bg[:, :, c] = np.broadcast_to(gradient, (size, size)).astype(np.uint8)
-        else:
-            bg = np.random.randint(40, 70, (size, size, 3), dtype=np.uint8)
-            bg = cv2.GaussianBlur(bg, (11, 11), 0)
-
-        return np.clip(bg, 0, 255).astype(np.uint8)
-
-    def _create_metal_workpiece(self, size):
-        """创建单个金属工件。"""
-        obj_img = np.zeros((size, size, 3), dtype=np.uint8)
-        obj_mask = np.zeros((size, size), dtype=np.uint8)
-
-        # 随机选择工件形状
-        shape = np.random.choice(['circle', 'rectangle', 'polygon', 'ring', 'ellipse'])
-
-        # 随机位置和大小
-        cx = np.random.randint(size // 4, 3 * size // 4)
-        cy = np.random.randint(size // 4, 3 * size // 4)
-        obj_size = np.random.randint(size // 6, size // 3)
-
-        # 金属颜色 (银灰色系)
-        base_color = np.random.randint(140, 220)
-        color_var = np.random.randint(-15, 15, 3)
-        metal_color = np.clip([base_color + v for v in color_var], 0, 255).tolist()
-
-        if shape == 'circle':
-            cv2.circle(obj_img, (cx, cy), obj_size, metal_color, -1)
-            cv2.circle(obj_mask, (cx, cy), obj_size, 255, -1)
-
-        elif shape == 'rectangle':
-            angle = np.random.uniform(0, 360)
-            w_half = obj_size
-            h_half = int(obj_size * np.random.uniform(0.4, 1.0))
-            rect = cv2.boxPoints(((cx, cy), (w_half * 2, h_half * 2), angle))
-            rect = rect.astype(np.intp)
-            cv2.fillPoly(obj_img, [rect], metal_color)
-            cv2.fillPoly(obj_mask, [rect], 255)
-
-        elif shape == 'polygon':
-            n_sides = np.random.randint(5, 9)
-            angles = np.linspace(0, 2 * np.pi, n_sides, endpoint=False)
-            angles += np.random.uniform(0, 2 * np.pi)
-            radii = obj_size * np.random.uniform(0.7, 1.0, n_sides)
-            pts = np.array([
-                [int(cx + r * np.cos(a)), int(cy + r * np.sin(a))]
-                for a, r in zip(angles, radii)
-            ])
-            cv2.fillPoly(obj_img, [pts], metal_color)
-            cv2.fillPoly(obj_mask, [pts], 255)
-
-        elif shape == 'ring':
-            outer_r = obj_size
-            inner_r = int(obj_size * np.random.uniform(0.3, 0.7))
-            cv2.circle(obj_img, (cx, cy), outer_r, metal_color, -1)
-            cv2.circle(obj_mask, (cx, cy), outer_r, 255, -1)
-            cv2.circle(obj_img, (cx, cy), inner_r, (0, 0, 0), -1)
-            cv2.circle(obj_mask, (cx, cy), inner_r, 0, -1)
-
-        elif shape == 'ellipse':
-            axes = (obj_size, int(obj_size * np.random.uniform(0.4, 0.8)))
-            angle = np.random.uniform(0, 360)
-            cv2.ellipse(obj_img, (cx, cy), axes, angle, 0, 360, metal_color, -1)
-            cv2.ellipse(obj_mask, (cx, cy), axes, angle, 0, 360, 255, -1)
-
-        # 添加金属质感
-        if obj_mask.max() > 0:
-            # 轻微的亮度渐变模拟金属反射
-            y_coords, x_coords = np.where(obj_mask > 0)
-            if len(y_coords) > 0:
-                gradient = np.random.uniform(0.8, 1.2, len(y_coords))
-                for c in range(3):
-                    vals = obj_img[y_coords, x_coords, c].astype(np.float32)
-                    obj_img[y_coords, x_coords, c] = np.clip(vals * gradient, 0, 255).astype(np.uint8)
-
-        return obj_img, obj_mask
-
-    def generate_batch(self, batch_size, save_dir=None):
-        """
-        批量生成合成数据。
-
-        参数:
-            batch_size: 生成数量
-            save_dir:   保存目录 (可选)
-
-        返回:
-            list of dict
-        """
-        batch = []
-        for i in range(batch_size):
-            sample = self.generate()
-            batch.append(sample)
-
-            if save_dir:
-                save_path = Path(save_dir)
-                (save_path / 'images').mkdir(parents=True, exist_ok=True)
-                (save_path / 'masks').mkdir(parents=True, exist_ok=True)
-                (save_path / 'edges').mkdir(parents=True, exist_ok=True)
-
-                cv2.imwrite(str(save_path / 'images' / f'syn_{i:05d}.png'), sample['image'])
-                cv2.imwrite(str(save_path / 'masks' / f'syn_{i:05d}.png'), sample['mask'])
-                cv2.imwrite(str(save_path / 'edges' / f'syn_{i:05d}.png'), sample['edge_mask'])
-
-        return batch
+        out_mask = _mask if mask is not None else None
+        out_edge = _edge if edge is not None else None
+        return image, out_mask, out_edge
 
 
-# ===========================================================================
-# 5. 入口点
-# ===========================================================================
+# ============================================================
+# 命令行入口（可视化验证）
+# ============================================================
 
 if __name__ == "__main__":
-    print("=" * 60)
-    print("高反光工件数据增强管线测试")
-    print("=" * 60)
+    import argparse
+    import os
 
-    # 测试合成数据生成
-    print("\n1. 测试合成数据生成器...")
-    gen = SyntheticMetalWorkpieceGenerator(img_size=256, min_objects=1, max_objects=3)
-    sample = gen.generate()
-    print(f"   图像尺寸: {sample['image'].shape}")
-    print(f"   掩膜尺寸: {sample['mask'].shape}")
-    print(f"   边缘尺寸: {sample['edge_mask'].shape}")
-    print(f"   掩膜非零像素: {np.count_nonzero(sample['mask'])}")
-    print(f"   边缘非零像素: {np.count_nonzero(sample['edge_mask'])}")
+    parser = argparse.ArgumentParser(description="数据增强管线可视化验证")
+    parser.add_argument("--input",  type=str, default=None)
+    parser.add_argument("--output", type=str, default="./aug_preview")
+    parser.add_argument("--n",      type=int, default=8)
+    args = parser.parse_args()
 
-    # 测试增强管线
-    print("\n2. 测试增强管线...")
-    pipeline = HighReflectivityAugPipeline(mode='train', img_size=256)
-    augmented = pipeline(image=sample['image'], mask=sample['mask'])
-    print(f"   增强后图像: {augmented['image'].shape}")
-    print(f"   增强后掩膜: {augmented['mask'].shape}")
-    print(f"   增强后边缘: {augmented['edge_mask'].shape}")
+    os.makedirs(args.output, exist_ok=True)
 
-    # 测试批量生成并保存
-    print("\n3. 测试批量生成 (5 张)...")
-    save_dir = '/tmp/synthetic_test'
-    gen.generate_batch(5, save_dir=save_dir)
-    print(f"   保存到: {save_dir}")
-    for subdir in ['images', 'masks', 'edges']:
-        files = os.listdir(os.path.join(save_dir, subdir))
-        print(f"   {subdir}/: {len(files)} 个文件")
+    if args.input and os.path.exists(args.input):
+        image = cv2.imread(args.input)
+        mask  = np.zeros(image.shape[:2], dtype=np.uint8)
+        edge  = np.zeros(image.shape[:2], dtype=np.uint8)
+    else:
+        from synth_dataset_generator import synthesize_one_sample
+        print("[aug] 使用合成船舶场景图像")
+        sample = synthesize_one_sample(h=512, w=512)
+        image, mask, edge = sample['image'], sample['mask'], sample['edge']
 
-    print("\n数据增强管线测试通过！")
+    aug = ShipHullAugPipeline(p=1.0)
+
+    thumb = 256
+    cols = 4
+    rows = math.ceil(args.n / cols)
+    grid = np.zeros((rows * thumb, cols * thumb, 3), dtype=np.uint8)
+
+    for i in range(args.n):
+        img_a, msk_a, edg_a = aug(image.copy(), mask.copy(), edge.copy())
+        vis = img_a.copy()
+        if msk_a is not None:
+            vis[msk_a > 100] = (vis[msk_a > 100].astype(np.float32) * 0.6 +
+                                 np.array([0, 200, 0]) * 0.4).astype(np.uint8)
+        if edg_a is not None:
+            vis[edg_a > 128] = [0, 0, 255]
+        r, c = divmod(i, cols)
+        grid[r * thumb:(r + 1) * thumb, c * thumb:(c + 1) * thumb] = \
+            cv2.resize(vis, (thumb, thumb))
+
+    out_path = os.path.join(args.output, "aug_grid.png")
+    cv2.imwrite(out_path, grid)
+    print(f"[aug] 增强预览已保存: {out_path}")
