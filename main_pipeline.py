@@ -41,14 +41,14 @@ import cv2
 import numpy as np
 import torch
 
-from feature_extraction import AGEANet, AGEANetLite
-from hdr_processing import (
+from vision.feature_extraction import AGEANet, AGEANetLite
+from vision.hdr_processing import (
     exposure_fusion_mertens,
     repair_highlight_regions,
     detect_highlight_mask,
     AntiGlarePipeline,
 )
-from localization_and_calibration import (
+from vision.localization_and_calibration import (
     SubpixelLocalizer,
     CoordinateTransformer,
     detect_glare_regions,

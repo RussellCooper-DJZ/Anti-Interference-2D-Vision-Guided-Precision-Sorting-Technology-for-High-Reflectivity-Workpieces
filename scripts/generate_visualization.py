@@ -28,8 +28,8 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
-from synth_national_scenes import NationalSceneGenerator, SceneType, LightType
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from data.synth_national_scenes import NationalSceneGenerator, SceneType, LightType
 
 # ============================================================
 # Configuration

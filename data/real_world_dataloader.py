@@ -36,7 +36,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset
 
-from data_augmentation import ShipHullAugPipeline, generate_edge_from_mask
+from data.data_augmentation import ShipHullAugPipeline, generate_edge_from_mask
 
 
 # ============================================================
