@@ -1,6 +1,6 @@
 # AGEANet 项目文化与工程化深度报告
 
-**作者**：Manus AI  
+**作者**：russellcooper  
 **日期**：2026-03-28  
 **项目**：Anti-Interference 2D Vision-Guided Precision Sorting for High-Reflectivity Workpieces
 
