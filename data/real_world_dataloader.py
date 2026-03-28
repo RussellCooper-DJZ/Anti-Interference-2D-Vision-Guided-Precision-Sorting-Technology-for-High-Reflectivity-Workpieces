@@ -38,6 +38,15 @@ from torch.utils.data import DataLoader, Dataset
 
 from data.data_augmentation import ShipHullAugPipeline, generate_edge_from_mask
 
+__all__ = [
+    "SynthShipDataset",
+    "RealShipDataset",
+    "MixedShipDataset",
+    "OnlineSynthDataset",
+    "build_dataloaders"
+]
+
+
 
 # ============================================================
 # 1. 合成数据集

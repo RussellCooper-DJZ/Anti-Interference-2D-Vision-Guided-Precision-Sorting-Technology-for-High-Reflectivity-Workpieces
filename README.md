@@ -1,5 +1,7 @@
 # Anti-Interference 2D Vision-Guided Precision Sorting for High-Reflectivity Workpieces
 
+[![CI](https://github.com/RussellCooper-DJZ/Anti-Interference-2D-Vision-Guided-Precision-Sorting-Technology-for-High-Reflectivity-Workpieces/actions/workflows/python-app.yml/badge.svg)](https://github.com/RussellCooper-DJZ/Anti-Interference-2D-Vision-Guided-Precision-Sorting-Technology-for-High-Reflectivity-Workpieces/actions/workflows/python-app.yml)
+
 ## 抗干扰 2D 视觉引导高反光工件精准分拣系统
 
 基于 **Renesas RZ/V2H + RA8P1** 平台，使用深度学习实现高反光金属工件（汽车门板钢、铝合金、大型船舶/桥梁高光面等）的精准边缘识别与机器人抓取。
@@ -60,6 +62,8 @@ repo/
 ---
 
 ## 🚀 快速开始 (Quick Start)
+
+> **注意**：本项目已全面采用标准 `logging` 模块替代 `print` 输出，以提供更规范的日志记录。
 
 ### 1. 环境安装
 ```bash

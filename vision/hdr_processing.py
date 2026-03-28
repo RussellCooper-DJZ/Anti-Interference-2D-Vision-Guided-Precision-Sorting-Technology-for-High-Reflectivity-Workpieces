@@ -22,6 +22,22 @@ from typing import Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 
+__all__ = [
+    "exposure_fusion_mertens",
+    "exposure_fusion_debevec",
+    "generate_synthetic_exposures",
+    "detect_highlight_mask",
+    "repair_highlight_regions",
+    "polarization_min_method",
+    "specular_diffuse_separation",
+    "apply_clahe_lab",
+    "guided_filter_opencv",
+    "unsharp_mask",
+    "AntiGlarePipeline",
+    "save_debug_grid"
+]
+
+
 
 # ---------------------------------------------------------------------------
 # 1. 多重曝光融合

@@ -28,6 +28,7 @@ ABB 通信接口：
 """
 
 import argparse
+import logging
 import json
 import math
 import os
@@ -40,6 +41,13 @@ from typing import Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 import torch
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger(__name__)
 
 from vision.feature_extraction import AGEANet, AGEANetLite
 from vision.hdr_processing import (
@@ -92,14 +100,14 @@ class AbbRobotStub:
         """建立连接（模拟：始终成功）。"""
         self._connected = True
         if self.verbose:
-            print(f"[ABB-Stub] 已连接到 {self.host}:{self.port}（模拟模式）")
+            logger.info(f"[ABB-Stub] 已连接到 {self.host}:{self.port}（模拟模式）")
         return True
 
     def disconnect(self):
         """断开连接。"""
         self._connected = False
         if self.verbose:
-            print("[ABB-Stub] 已断开连接")
+            logger.info("[ABB-Stub] 已断开连接")
 
     def send_target(
         self,
@@ -121,7 +129,7 @@ class AbbRobotStub:
             True = 指令已发送
         """
         if not self._connected:
-            print("[ABB-Stub] 错误：未连接")
+            logger.info("[ABB-Stub] 错误：未连接")
             return False
 
         self._move_count += 1
@@ -197,9 +205,9 @@ class VisionInferenceEngine:
             ckpt = torch.load(model_path, map_location=self.device)
             state = ckpt.get('model', ckpt)
             self.model.load_state_dict(state, strict=False)
-            print(f"[VisionEngine] 已加载模型: {model_path}")
+            logger.info(f"[VisionEngine] 已加载模型: {model_path}")
         else:
-            print("[VisionEngine] 警告：未加载预训练权重，使用随机初始化")
+            logger.info("[VisionEngine] 警告：未加载预训练权重，使用随机初始化")
 
         self.model.eval()
 
@@ -530,7 +538,7 @@ def run_demo_mode(pipeline: ShipVisionPipeline, output_dir: str):
         # 保存结果
         out_path = os.path.join(output_dir, f"demo_result_{i+1:02d}.png")
         cv2.imwrite(out_path, result['vis_image'])
-        print(f"[Demo] 可视化已保存: {out_path}")
+        logger.info(f"[Demo] 可视化已保存: {out_path}")
 
         # 打印检测结果
         for j, det in enumerate(result['detections']):
@@ -561,13 +569,13 @@ def run_image_mode(pipeline: ShipVisionPipeline, input_path: str, output_dir: st
     for img_path in images:
         image = cv2.imread(str(img_path))
         if image is None:
-            print(f"[Image] 跳过（无法读取）: {img_path}")
+            logger.info(f"[Image] 跳过（无法读取）: {img_path}")
             continue
 
         result = pipeline.process_frame(image_bgr=image, send_to_robot=True)
         out_path = os.path.join(output_dir, f"result_{img_path.stem}.png")
         cv2.imwrite(out_path, result['vis_image'])
-        print(f"[Image] 已保存: {out_path}")
+        logger.info(f"[Image] 已保存: {out_path}")
 
 
 def run_camera_mode(pipeline: ShipVisionPipeline, camera_id: int, output_dir: str):
@@ -575,10 +583,10 @@ def run_camera_mode(pipeline: ShipVisionPipeline, camera_id: int, output_dir: st
     os.makedirs(output_dir, exist_ok=True)
     cap = cv2.VideoCapture(camera_id)
     if not cap.isOpened():
-        print(f"[Camera] 错误：无法打开摄像头 {camera_id}")
+        logger.info(f"[Camera] 错误：无法打开摄像头 {camera_id}")
         return
 
-    print(f"[Camera] 已打开摄像头 {camera_id}，按 'q' 退出，'s' 保存当前帧")
+    logger.info(f"[Camera] 已打开摄像头 {camera_id}，按 'q' 退出，'s' 保存当前帧")
     frame_idx = 0
 
     while True:
@@ -595,7 +603,7 @@ def run_camera_mode(pipeline: ShipVisionPipeline, camera_id: int, output_dir: st
         elif key == ord('s'):
             out_path = os.path.join(output_dir, f"capture_{frame_idx:04d}.png")
             cv2.imwrite(out_path, result['vis_image'])
-            print(f"[Camera] 已保存: {out_path}")
+            logger.info(f"[Camera] 已保存: {out_path}")
             frame_idx += 1
 
     cap.release()

@@ -29,6 +29,25 @@ from typing import Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 
+__all__ = [
+    "set_seed",
+    "make_steel_plate_texture",
+    "make_rust_texture",
+    "make_paint_chip_texture",
+    "make_water_stain_texture",
+    "draw_weld_seam",
+    "draw_rivet_row",
+    "draw_porthole",
+    "draw_pipe",
+    "draw_hull_panel",
+    "LightingSystem",
+    "apply_surface_degradation",
+    "apply_camera_noise",
+    "synthesize_one_sample",
+    "generate_dataset"
+]
+
+
 
 # ============================================================
 # 全局随机数生成器（支持可复现 seed）

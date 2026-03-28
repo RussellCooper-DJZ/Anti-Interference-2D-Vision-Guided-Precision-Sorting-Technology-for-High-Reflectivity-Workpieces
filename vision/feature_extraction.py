@@ -31,6 +31,23 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Dict, Optional
 
+__all__ = [
+    "ConvBNReLU",
+    "DepthwiseSeparableConv",
+    "DoubleConv",
+    "ChannelAttention",
+    "SpatialAttention",
+    "CBAM",
+    "GlareGatedSkip",
+    "EncoderBlock",
+    "DecoderBlock",
+    "AGEANet",
+    "AGEANetLite",
+    "predict",
+    "get_model_info"
+]
+
+
 
 # ============================================================
 # 1. 基础模块

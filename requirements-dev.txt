@@ -1,0 +1,24 @@
+# AGEANet — 开发与测试依赖
+# Anti-Glare Edge-Aware Network for High-Reflectivity Workpiece Sorting
+# 安装方式: pip install -r requirements-dev.txt
+
+# 包含生产依赖
+-r requirements.txt
+
+# 代码质量
+flake8>=6.0.0
+black>=23.0.0
+isort>=5.12.0
+mypy>=1.0.0
+
+# 测试框架
+pytest>=7.0.0
+pytest-cov>=4.0.0
+
+# 训练可视化
+tensorboard>=2.13.0
+matplotlib>=3.5.0
+
+# 嵌入式部署转换（可选）
+# tensorflow>=2.13.0
+# onnx-tf>=1.10.0

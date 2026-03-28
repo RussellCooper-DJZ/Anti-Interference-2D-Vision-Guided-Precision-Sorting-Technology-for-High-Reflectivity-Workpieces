@@ -34,6 +34,33 @@ from typing import Optional, Tuple
 import cv2
 import numpy as np
 
+__all__ = [
+    "random_flip",
+    "random_rotate",
+    "random_scale_crop",
+    "random_perspective",
+    "random_brightness_contrast",
+    "random_gamma",
+    "random_shadow",
+    "random_water_reflection_band",
+    "random_sun_glare",
+    "random_specular_stripe",
+    "simulate_overexposure_region",
+    "random_gaussian_noise",
+    "random_motion_blur",
+    "random_defocus_blur",
+    "random_jpeg_compression",
+    "random_hsv_jitter",
+    "random_channel_shift",
+    "random_grayscale",
+    "random_erasing",
+    "random_fog",
+    "generate_edge_from_mask",
+    "generate_sobel_edge",
+    "ShipHullAugPipeline"
+]
+
+
 
 # ============================================================
 # 工具函数
