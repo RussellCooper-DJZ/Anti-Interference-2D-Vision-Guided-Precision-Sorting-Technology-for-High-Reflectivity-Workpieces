@@ -1,4 +1,4 @@
-# Anti-Interference 2D Vision-Guided Precision Sorting for High-Reflectivity Workpieces
+# Anti-Interference 2D Vision Guided Precision Sorting
 
 [![CI](https://github.com/RussellCooper-DJZ/Anti-Interference-2D-Vision-Guided-Precision-Sorting-Technology-for-High-Reflectivity-Workpieces/actions/workflows/python-app.yml/badge.svg)](https://github.com/RussellCooper-DJZ/Anti-Interference-2D-Vision-Guided-Precision-Sorting-Technology-for-High-Reflectivity-Workpieces/actions/workflows/python-app.yml)
 
@@ -23,74 +23,74 @@
 
 ## 📁 项目结构 (Project Structure)
 
-经过模块化重构，当前代码库结构如下：
+经过模块化重构，当前代码库结构遵循标准开源规范：
 
 ```text
-repo/
-├── vision/                         # 视觉算法核心模块
-│   ├── feature_extraction.py       # AGEANet / AGEANet-Lite 模型架构
-│   ├── hdr_processing.py           # HDR 融合与反光抑制管线
-│   └── localization_and_calibration.py # 亚像素定位与手眼标定
-├── data/                           # 数据处理与生成模块
-│   ├── synth_national_scenes.py    # 全国 8 大场景合成训练图像生成器
-│   ├── synth_dataset_generator.py  # 基础合成数据集生成器
-│   ├── data_augmentation.py        # 高反光专用数据增强管线
-│   └── real_world_dataloader.py    # 真实场景数据加载器
-├── training/                       # 模型训练模块
-│   └── train.py                    # 完整端到端训练流程
-├── robot/                          # 机器人控制与仿真接口
-│   ├── abb_robotstudio_interface.py# ABB RobotStudio TCP 通信接口
-│   └── abb_rapid/                  # ABB RAPID 控制器代码
-│       ├── abb_server.mod          # 运行于虚拟控制器的服务端程序
-│       └── README_RAPID.md         # RobotStudio 联调使用说明
-├── embedded/                       # 嵌入式端部署模块 (Renesas RA8P1)
-│   ├── core/                       # EdgeVision-C 纯 C 推理引擎
-│   ├── ra8p1_main_app.c            # 嵌入式主程序
-│   └── ra8p1_helium_processing.c   # Helium MVE 向量化处理
-├── scripts/                        # 独立工具脚本
-│   ├── generate_visualization.py   # 完整可视化数据生成脚本
-│   ├── inspect_dataset.py          # 数据集检查工具
-│   └── labelme_to_mask.py          # LabelMe 标注转换工具
-├── docs/                           # 文档与可视化数据
-│   ├── technical/                  # 详细技术方案与硬件设计文档
-│   ├── visualization/              # 生成的场景样本与统计分析图表
-│   └── ABB_RobotStudio_Integration_Guide.md # ABB 仿真集成指南
-├── main_pipeline.py                # 顶层系统入口与演示程序
-└── requirements.txt                # Python 依赖清单
+.
+├── src/                            # 源代码核心目录
+│   ├── vision/                     # 视觉算法核心模块
+│   │   ├── feature_extraction.py   # AGEANet / AGEANet-Lite 模型架构
+│   │   ├── hdr_processing.py       # HDR 融合与反光抑制管线
+│   │   └── localization_and_calibration.py # 亚像素定位与手眼标定
+│   ├── data/                       # 数据处理与生成模块
+│   │   ├── synth_national_scenes.py # 全国 8 大场景合成训练图像生成器
+│   │   ├── synth_dataset_generator.py # 基础合成数据集生成器
+│   │   ├── data_augmentation.py    # 高反光专用数据增强管线
+│   │   └── real_world_dataloader.py # 真实场景数据加载器
+│   ├── training/                   # 模型训练模块
+│   │   └── train.py                # 完整端到端训练流程
+│   ├── robot/                      # 机器人控制与仿真接口
+│   │   ├── abb_robotstudio_interface.py # ABB RobotStudio TCP 通信接口
+│   │   └── abb_rapid/              # ABB RAPID 控制器代码
+│   ├── embedded/                   # 嵌入式端部署模块 (Renesas RA8P1)
+│   │   ├── core/                   # EdgeVision-C 纯 C 推理引擎
+│   │   ├── ra8p1_main_app.c        # 嵌入式主程序
+│   │   └── ra8p1_helium_processing.c # Helium MVE 向量化处理
+│   └── main_pipeline.py            # 端到端测试主入口
+├── docs/                           # 文档目录
+│   ├── guides/                     # 详细操作指南 (Dataset, Annotation, etc.)
+│   ├── legal/                      # 专利、审计与合规文档
+│   ├── technical/                  # 技术设计与方案说明
+│   └── visualization/              # 可视化结果与分析图表
+├── scripts/                        # 独立工具与辅助脚本
+├── requirements.txt                # Python 依赖清单
+├── pyproject.toml                  # 项目配置文件
+└── LICENSE                         # 许可证
 ```
 
 ---
 
 ## 🚀 快速开始 (Quick Start)
 
-> **注意**：本项目已全面采用标准 `logging` 模块替代 `print` 输出，以提供更规范的日志记录。
-
-### 1. 环境安装
+### 1. 环境准备
 ```bash
 pip install -r requirements.txt
 ```
 
-### 2. 运行主流水线演示 (包含视觉处理与 ABB 模拟通信)
+### 2. 数据生成与模型训练
 ```bash
-python main_pipeline.py --demo
+# 生成合成数据集
+python src/data/synth_national_scenes.py
+# 开始训练
+python src/training/train.py
 ```
 
-### 3. 生成全国复杂场景合成数据集
+### 3. 运行主管线
 ```bash
-python data/synth_national_scenes.py --n 100 --scene SHIPYARD --light WELD_ARC --output ./dataset
-```
-
-### 4. 生成可视化分析报告
-```bash
-python scripts/generate_visualization.py
+python src/main_pipeline.py
 ```
 
 ---
 
-## 许可证与专利声明
+## 📚 文档指南 (Documentation)
 
-本项目采用 **Apache License 2.0** 协议开源。
+- [数据集采集与标注指南](docs/guides/DATASET_COLLECTION_AND_ANNOTATION_GUIDE.md)
+- [ABB RobotStudio 联调指南](docs/robot/README_RAPID.md)
+- [嵌入式部署方案](docs/technical/ra8p1_embedded_vision_solution.md)
+- [专利与技术披露](docs/legal/Technical_Disclosure_Document.md)
 
-**专利声明**：本项目实现的 `AGEANet` 架构、`EdgeVision-C` 静态内存管理算法及 `Helium` 优化算子受专利保护。访问源代码不代表获得专利许可，商业用途请联系 **RussellCooper**。详情请参阅 [PATENTS](./PATENTS) 文件。
+---
 
-**合规性声明**：本项目遵循 **Clean-room 工程化**标准独立开发，所有核心算子实现均基于数学定义，未参考任何受保护的第三方源代码。详情请参阅 [CLEAN_ROOM_AUDIT.md](./CLEAN_ROOM_AUDIT.md)。
+## ⚖️ 许可证 (License)
+
+本项目采用 [MIT License](LICENSE) 授权。
