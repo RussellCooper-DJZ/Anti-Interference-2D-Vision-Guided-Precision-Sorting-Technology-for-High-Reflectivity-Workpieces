@@ -36,7 +36,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset
 
-from data.data_augmentation import ShipHullAugPipeline, generate_edge_from_mask
+from src.data.data_augmentation import ShipHullAugPipeline, generate_edge_from_mask
 
 __all__ = [
     "SynthShipDataset",
@@ -258,7 +258,7 @@ class OnlineSynthDataset(Dataset):
         self.aug        = ShipHullAugPipeline(p=0.9)
 
         # 延迟导入（避免循环依赖）
-        from synth_dataset_generator import synthesize_one_sample
+        from src.data.synth_dataset_generator import synthesize_one_sample
         self._synthesize = synthesize_one_sample
 
     def __len__(self) -> int:

@@ -10,6 +10,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `docs/technical/MAINTENANCE_LOG.md`：新增项目深度维护与审计记录
+- `pyproject.toml`：新增 `src` 布局配置支持
+
+### Changed
+- **重大架构重构**：将所有核心算法与模块移至 `src/` 目录，规范化项目布局
+- `README.md`：更新项目结构图与文档链接
+- `pyproject.toml`：优化 `pytest` 覆盖率统计路径
+
+### Fixed
+- 修复 `AGEANetLite` 模型中 `edge_head` 的输入通道维度不匹配问题
+- 修复重构后全线模块的 `import` 路径失效问题
+- 修复 `OnlineSynthDataset` 的延迟导入路径错误
+
+---
+
+## [0.5.1] — 2026-04-25
+
+### Added
 - `.github/workflows/python-app.yml`：新增 GitHub Actions CI 工作流，自动执行 flake8 语法检查
 - `requirements-dev.txt`：新增开发依赖文件（flake8、black、isort、mypy、pytest、tensorboard 等）
 - `CONTRIBUTING.md`：新增贡献指南，包含开发环境搭建、代码风格规范与 PR 流程

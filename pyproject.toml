@@ -71,6 +71,13 @@ use_parentheses = true
 ensure_newline_before_comments = true
 skip = [".git", ".venv", "build", "dist", "__pycache__"]
 
+[tool.setuptools.package-dir]
+"" = "."
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+
 [tool.mypy]
 python_version = "3.10"
 warn_return_any = true
@@ -84,7 +91,7 @@ exclude = [
 
 [tool.pytest.ini_options]
 minversion = "7.0"
-addopts = "-ra -q --cov=vision --cov=data --cov=training --cov=robot"
+addopts = "-ra -q --cov=src"
 testpaths = [
     "tests",
 ]

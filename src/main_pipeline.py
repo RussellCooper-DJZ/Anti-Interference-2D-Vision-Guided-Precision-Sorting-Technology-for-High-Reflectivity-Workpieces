@@ -49,14 +49,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-from vision.feature_extraction import AGEANet, AGEANetLite
-from vision.hdr_processing import (
+from src.vision.feature_extraction import AGEANet, AGEANetLite
+from src.vision.hdr_processing import (
     exposure_fusion_mertens,
     repair_highlight_regions,
     detect_highlight_mask,
     AntiGlarePipeline,
 )
-from vision.localization_and_calibration import (
+from src.vision.localization_and_calibration import (
     SubpixelLocalizer,
     CoordinateTransformer,
     detect_glare_regions,

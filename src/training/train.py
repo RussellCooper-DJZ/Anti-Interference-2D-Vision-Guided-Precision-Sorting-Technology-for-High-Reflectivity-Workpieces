@@ -42,8 +42,8 @@ from torch.optim import AdamW
 from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.tensorboard import SummaryWriter
 
-from vision.feature_extraction import AGEANet, AGEANetLite, get_model_info
-from data.real_world_dataloader import build_dataloaders
+from src.vision.feature_extraction import AGEANet, AGEANetLite, get_model_info
+from src.data.real_world_dataloader import build_dataloaders
 
 
 # ============================================================

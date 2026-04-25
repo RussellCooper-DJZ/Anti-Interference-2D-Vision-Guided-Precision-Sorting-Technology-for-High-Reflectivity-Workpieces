@@ -373,9 +373,9 @@ class AGEANetLite(nn.Module):
             nn.Conv2d(c, out_channels, 1),
             nn.Sigmoid(),
         )
-        # edge_head 接 dec2 输出，通道数为 c（不是 c*2）
+        # edge_head 接 dec2 输出，通道数为 c * 2（DecoderBlock 输出）
         self.edge_head = nn.Sequential(
-            nn.Conv2d(c, 1, 1),
+            nn.Conv2d(c * 2, 1, 1),
             nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False),
             nn.Sigmoid(),
         )
