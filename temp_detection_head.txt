@@ -1,0 +1,323 @@
+# ============================================================
+# 10. YOLO风格改进：FPN + Anchor-Free检测头
+# ============================================================
+
+class DetectionHead(nn.Module):
+    """
+    改进的检测头 - 带IoU感知和边界感知定�?
+
+    预测�?
+    - bbox: (l, t, r, b) 边界距离
+    - objectness: 目标置信�?
+    - iou_pred: 预测IoU（用于NMS排序�?
+    - centerness: 中心�?
+    """
+
+    def __init__(self, in_channels, feat_channels=256):
+        super().__init__()
+
+        # 共享特征
+        self.share_conv = nn.Sequential(
+            nn.Conv2d(in_channels, feat_channels, 3, padding=1, bias=False),
+            nn.BatchNorm2d(feat_channels),
+            nn.ReLU(inplace=True),
+        )
+
+        # 边界回归�?- 预测4个边界距�?
+        self.bbox_conv = nn.Sequential(
+            nn.Conv2d(feat_channels, feat_channels, 3, padding=1, bias=False),
+            nn.BatchNorm2d(feat_channels),
+            nn.ReLU(inplace=True),
+        )
+        self.bbox_pred = nn.Conv2d(feat_channels, 4, 1)  # ltrb
+
+        # Objectness�?
+        self.obj_conv = nn.Sequential(
+            nn.Conv2d(feat_channels, feat_channels // 2, 3, padding=1, bias=False),
+            nn.BatchNorm2d(feat_channels // 2),
+            nn.ReLU(inplace=True),
+        )
+        self.obj_pred = nn.Conv2d(feat_channels // 2, 1, 1)
+
+        # IoU预测�?- 直接预测与GT的IoU
+        self.iou_conv = nn.Sequential(
+            nn.Conv2d(feat_channels, feat_channels // 2, 3, padding=1, bias=False),
+            nn.BatchNorm2d(feat_channels // 2),
+            nn.ReLU(inplace=True),
+        )
+        self.iou_pred = nn.Conv2d(feat_channels // 2, 1, 1)
+
+        # Centerness�?
+        self.center_conv = nn.Sequential(
+            nn.Conv2d(feat_channels, feat_channels // 2, 3, padding=1, bias=False),
+            nn.BatchNorm2d(feat_channels // 2),
+            nn.ReLU(inplace=True),
+        )
+        self.center_pred = nn.Conv2d(feat_channels // 2, 1, 1)
+
+        self._init_weights()
+
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.normal_(m.weight, std=0.01)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+
+    def forward(self, x):
+        feat = self.share_conv(x)
+
+        bbox = self.bbox_pred(self.bbox_conv(feat))
+        obj = self.obj_pred(self.obj_conv(feat))
+        iou = self.iou_pred(self.iou_conv(feat))
+        center = self.center_pred(self.center_conv(feat))
+
+        # 应用sigmoid到需要的地方
+        obj = torch.sigmoid(obj)
+        iou = torch.sigmoid(iou)
+        center = torch.sigmoid(center)
+
+        return {
+            'bbox': bbox,      # ltrb
+            'objectness': obj,
+            'iou_pred': iou,   # IoU预测
+            'centerness': center,
+        }
+
+
+class FPN(nn.Module):
+    """
+    Feature Pyramid Network �?多尺度特征金字塔�?
+
+    从编码器多尺度特�?(P2, P3, P4, P5) 融合为更强的特征表达�?
+    提升不同大小目标的检测能力�?
+    """
+
+    def __init__(self, in_channels_list, out_channels=256):
+        super().__init__()
+        self.lateral_convs = nn.ModuleList([
+            nn.Conv2d(in_ch, out_channels, 1) for in_ch in in_channels_list
+        ])
+        self.fpn_convs = nn.ModuleList([
+            nn.Conv2d(out_channels, out_channels, 3, padding=1)
+            for _ in in_channels_list
+        ])
+
+    def forward(self, features):
+        """
+        Args:
+            features: list of [C2, C3, C4, C5] from encoder
+
+        Returns:
+            list of [P2, P3, P4, P5] fpn features
+        """
+        laterals = [lat_conv(feat) for lat_conv, feat in zip(self.lateral_convs, features)]
+
+        # 自顶向下融合
+        for i in range(len(laterals) - 1, 0, -1):
+            laterals[i - 1] += F.interpolate(
+                laterals[i], size=laterals[i - 1].shape[-2:],
+                mode='nearest'
+            )
+
+        # 1x1 conv + ReLU
+        fpn_features = [conv(lat) for conv, lat in zip(self.fpn_convs, laterals)]
+        return fpn_features
+
+
+class AnchorFreeHead(nn.Module):
+    """
+    Anchor-Free 检测头（FCOS风格�? 尺寸感知�?
+
+    每个位置预测�?
+    - bbox: (l, t, r, b) 相对于中心的距离
+    - size: (w, h) 目标宽高（像素）
+    - objectness: 目标置信�?
+    - centerness: 中心度（用于NMS排序�?
+
+    优势�?
+    - 无需预设anchor，降低超参数数量
+    - 对小目标和大目标都友�?
+    - 尺寸感知：直接回归目标宽高，支持长度意识
+    """
+
+    def __init__(self, in_channels, feat_channels=256, num_classes=1):
+        super().__init__()
+        self.num_classes = num_classes
+
+        # 共享特征�?
+        self.bbox_conv = nn.Sequential(
+            nn.Conv2d(in_channels, feat_channels, 3, padding=1, bias=False),
+            nn.BatchNorm2d(feat_channels),
+            nn.ReLU(inplace=True),
+        )
+        self.cls_conv = nn.Sequential(
+            nn.Conv2d(in_channels, feat_channels, 3, padding=1, bias=False),
+            nn.BatchNorm2d(feat_channels),
+            nn.ReLU(inplace=True),
+        )
+        self.size_conv = nn.Sequential(
+            nn.Conv2d(in_channels, feat_channels, 3, padding=1, bias=False),
+            nn.BatchNorm2d(feat_channels),
+            nn.ReLU(inplace=True),
+        )
+
+        # bbox回归�? (l, t, r, b) 四通道
+        self.bbox_pred = nn.Conv2d(feat_channels, 4, 1)
+        # 尺寸回归�? (w, h) 二通道（像素单位）
+        self.size_pred = nn.Conv2d(feat_channels, 2, 1)
+        # objectness�? 1通道
+        self.obj_pred = nn.Conv2d(feat_channels, 1, 1)
+        # centerness�? 1通道
+        self.centerness_pred = nn.Conv2d(feat_channels, 1, 1)
+
+        self._init_weights()
+
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.normal_(m.weight, std=0.01)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+
+    def forward(self, x):
+        bbox_feat = self.bbox_conv(x)
+        cls_feat = self.cls_conv(x)
+        size_feat = self.size_conv(x)
+
+        bbox = self.bbox_pred(bbox_feat)
+        size = self.size_pred(size_feat)  # (w, h) 像素单位
+        obj = self.obj_pred(cls_feat)
+        centerness = self.centerness_pred(cls_feat)
+
+        return {
+            'bbox': bbox,      # (B, 4, H, W) - l,t,r,b distances
+            'size': size,      # (B, 2, H, W) - w, h in pixels
+            'objectness': obj,  # (B, 1, H, W)
+            'centerness': centerness,  # (B, 1, H, W)
+        }
+
+
+class CIoULoss(nn.Module):
+    """
+    Complete IoU Loss �?�?MSE/L1 更适合目标检测的回归损失�?
+
+    CIoU 考虑�?
+    - 重叠面积 (IoU)
+    - 中心距离
+    - 长宽�?
+
+    比普�?IoU Loss 收敛更快，定位更准�?
+    """
+
+    def __init__(self, eps: float = 1e-7):
+        super().__init__()
+        self.eps = eps
+
+    def forward(self, pred_ltrb, target_ltrb):
+        """
+        Args:
+            pred_ltrb: (B, 4, H, W) predicted left/top/right/bottom
+            target_ltrb: (B, 4, H, W) target left/top/right/bottom
+
+        Returns:
+            CIoU loss scalar
+        """
+        # 转换�?(cx, cy, w, h) 格式
+        # ltrb: [0]=left, [1]=top, [2]=right, [3]=bottom
+        pred_cx = (pred_ltrb[:, 0] + pred_ltrb[:, 2]) / 2
+        pred_cy = (pred_ltrb[:, 1] + pred_ltrb[:, 3]) / 2
+        pred_w = pred_ltrb[:, 0] + pred_ltrb[:, 2] + self.eps
+        pred_h = pred_ltrb[:, 1] + pred_ltrb[:, 3] + self.eps
+
+        target_cx = (target_ltrb[:, 0] + target_ltrb[:, 2]) / 2
+        target_cy = (target_ltrb[:, 1] + target_ltrb[:, 3]) / 2
+        target_w = target_ltrb[:, 0] + target_ltrb[:, 2] + self.eps
+        target_h = target_ltrb[:, 1] + target_ltrb[:, 3] + self.eps
+
+        # IoU
+        pred_area = pred_w * pred_h
+        target_area = target_w * target_h
+        inter_w = (torch.min(pred_cx + pred_w / 2, target_cx + target_w / 2) -
+                   torch.max(pred_cx - pred_w / 2, target_cx - target_w / 2)).clamp(0)
+        inter_h = (torch.min(pred_cy + pred_h / 2, target_cy + target_h / 2) -
+                   torch.max(pred_cy - pred_h / 2, target_cy - target_h / 2)).clamp(0)
+        inter_area = inter_w * inter_h
+        union_area = pred_area + target_area - inter_area + self.eps
+        iou = inter_area / union_area
+
+        # 中心距离
+        dist_cx = pred_cx - target_cx
+        dist_cy = pred_cy - target_cy
+        center_dist_sq = dist_cx ** 2 + dist_cy ** 2
+
+        # 外接矩形对角距离
+        enclose_w = torch.max(pred_cx + pred_w / 2, target_cx + target_w / 2) - \
+                    torch.min(pred_cx - pred_w / 2, target_cx - target_w / 2)
+        enclose_h = torch.max(pred_cy + pred_h / 2, target_cy + target_h / 2) - \
+                    torch.min(pred_cy - pred_h / 2, target_cy - target_h / 2)
+        enclose_diagonal_sq = enclose_w ** 2 + enclose_h ** 2 + self.eps
+
+        # 长宽�?
+        v = (4 / (math.pi ** 2)) * (
+            torch.atan(pred_w / (pred_h + self.eps)) -
+            torch.atan(target_w / (target_h + self.eps))
+        ) ** 2
+        alpha = v / ((1 - iou + v) + self.eps)
+
+        # CIoU = IoU - (中心距^2 / 外接矩形对角^2) - αv
+        ciou = iou - (center_dist_sq / enclose_diagonal_sq) - alpha * v
+
+        return 1.0 - ciou.mean()
+
+
+def nms_centerness(detections, iou_threshold=0.5, score_threshold=0.3):
+    """
+    基于中心度的 NMS 后处理�?
+
+    Args:
+        detections: list of dict with keys: bbox, score, centerness
+        iou_threshold: IoU 阈�?
+        score_threshold: 分数阈�?
+
+    Returns:
+        filtered detections after NMS
+    """
+    if not detections:
+        return []
+
+    # �?centerness * score 排序
+    for d in detections:
+        d['final_score'] = d['score'] * d['centerness']
+    detections = sorted(detections, key=lambda x: x['final_score'], reverse=True)
+
+    keep = []
+    while detections:
+        best = detections.pop(0)
+        keep.append(best)
+
+        rest = []
+        for d in detections:
+            iou = compute_iou(best['bbox'], d['bbox'])
+            if iou < iou_threshold:
+                rest.append(d)
+        detections = rest
+
+    return keep
+
+
+def compute_iou(box1, box2):
+    """计算两个 bbox �?IoU。box format: [l, t, r, b]"""
+    inter_l = max(box1[0], box2[0])
+    inter_t = max(box1[1], box2[1])
+    inter_r = min(box1[2], box2[2])
+    inter_b = min(box1[3], box2[3])
+
+    inter_area = max(0, inter_r - inter_l) * max(0, inter_b - inter_t)
+
+    area1 = (box1[2] - box1[0]) * (box1[3] - box1[1])
+    area2 = (box2[2] - box2[0]) * (box2[3] - box2[1])
+
+    union_area = area1 + area2 - inter_area + 1e-7
+
+    return inter_area / union_area

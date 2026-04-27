@@ -1,0 +1,65 @@
+<UserControl x:Class="AntiInterference2D.GUI.Views.DashboardView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" Text="系统仪表盘" 
+                   Style="{StaticResource TitleTextStyle}" Margin="8"/>
+
+        <!-- 状态卡片 -->
+        <UniformGrid Grid.Row="1" Columns="4" Margin="8">
+            <Border Style="{StaticResource CardStyle}">
+                <StackPanel>
+                    <TextBlock Text="系统状态" Style="{StaticResource SubtitleTextStyle}"/>
+                    <TextBlock Text="{Binding SystemStatus}" FontSize="20" FontWeight="Bold" 
+                               Foreground="{StaticResource PrimaryBrush}" Margin="0,8,0,0"/>
+                </StackPanel>
+            </Border>
+            <Border Style="{StaticResource CardStyle}">
+                <StackPanel>
+                    <TextBlock Text="当前模型" Style="{StaticResource SubtitleTextStyle}"/>
+                    <TextBlock Text="{Binding ModelName}" FontSize="16" FontWeight="Bold" 
+                               Foreground="{StaticResource TextBrush}" Margin="0,8,0,0" TextTrimming="CharacterEllipsis"/>
+                </StackPanel>
+            </Border>
+            <Border Style="{StaticResource CardStyle}">
+                <StackPanel>
+                    <TextBlock Text="推理设备" Style="{StaticResource SubtitleTextStyle}"/>
+                    <TextBlock Text="{Binding DeviceName}" FontSize="16" FontWeight="Bold" 
+                               Foreground="{StaticResource TextBrush}" Margin="0,8,0,0" TextTrimming="CharacterEllipsis"/>
+                </StackPanel>
+            </Border>
+            <Border Style="{StaticResource CardStyle}">
+                <StackPanel>
+                    <TextBlock Text="显存占用" Style="{StaticResource SubtitleTextStyle}"/>
+                    <TextBlock Text="{Binding MemoryUsage}" FontSize="16" FontWeight="Bold" 
+                               Foreground="{StaticResource TextBrush}" Margin="0,8,0,0"/>
+                </StackPanel>
+            </Border>
+        </UniformGrid>
+
+        <!-- 说明区域 -->
+        <Border Grid.Row="2" Style="{StaticResource CardStyle}" Margin="8">
+            <StackPanel>
+                <TextBlock Text="欢迎使用 AGEANet 高反光工件视觉检测系统" 
+                           FontSize="16" FontWeight="SemiBold" Margin="0,0,0,12"/>
+                <TextBlock Text="左侧导航栏可选择功能模块：" 
+                           Style="{StaticResource SubtitleTextStyle}" Margin="0,0,0,8"/>
+                <TextBlock Text="• 图像检测 — 单张图像的上传、推理与结果可视化" Margin="4,2"/>
+                <TextBlock Text="• 批量处理 — 文件夹批量推理与结果导出" Margin="4,2"/>
+                <TextBlock Text="• 参数配置 — HDR/阈值/模型后端等推理参数调优" Margin="4,2"/>
+                <TextBlock Text="• 模型管理 — 加载/切换 PyTorch、ONNX、TensorRT 模型" Margin="4,2"/>
+                <TextBlock Text="• 机器人控制 — ABB RobotStudio / EGM 通信与目标发送" Margin="4,2"/>
+                <Separator Margin="0,16"/>
+                <TextBlock Text="技术栈：WPF (.NET 8) + FastAPI + PyTorch / ONNX / TensorRT" 
+                           FontSize="11" Foreground="{StaticResource SubTextBrush}"/>
+            </StackPanel>
+        </Border>
+    </Grid>
+</UserControl>

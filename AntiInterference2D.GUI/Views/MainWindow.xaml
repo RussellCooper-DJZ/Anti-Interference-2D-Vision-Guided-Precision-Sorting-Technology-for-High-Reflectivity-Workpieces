@@ -1,0 +1,235 @@
+<Window x:Class="AntiInterference2D.GUI.Views.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:converters="clr-namespace:AntiInterference2D.GUI.Converters"
+        xmlns:models="clr-namespace:AntiInterference2D.GUI.Models"
+        mc:Ignorable="d"
+        Title="AGEANet Vision System"
+        Height="960" Width="1440"
+        WindowStartupLocation="CenterScreen"
+        Background="{StaticResource BgMain}">
+
+    <Window.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="../Assets/Styles.xaml"/>
+            </ResourceDictionary.MergedDictionaries>
+            <converters:BoolToColorConverter x:Key="BoolToColorConverter"/>
+            <converters:NullToVisibilityConverter x:Key="NullToVisConverter"/>
+        </ResourceDictionary>
+    </Window.Resources>
+
+    <DockPanel>
+        <!-- Top Menu -->
+        <Menu DockPanel.Dock="Top" Background="{StaticResource BgPanel}" Foreground="{StaticResource FgMain}">
+            <MenuItem Header="File">
+                <MenuItem Header="Open Image..."    Command="{Binding OpenImageCommand}"/>
+                <MenuItem Header="Open Folder..."   Command="{Binding OpenFolderCommand}"/>
+                <Separator/>
+                <MenuItem Header="Export Results..." Command="{Binding ExportResultsCommand}"/>
+                <Separator/>
+                <MenuItem Header="Exit"             Command="{Binding ExitCommand}"/>
+            </MenuItem>
+            <MenuItem Header="View">
+                <MenuItem Header="Image"            Command="{Binding ShowImageCommand}"/>
+                <MenuItem Header="Batch"            Command="{Binding ShowBatchCommand}"/>
+                <MenuItem Header="Models"           Command="{Binding ShowModelsCommand}"/>
+                <MenuItem Header="Robot"            Command="{Binding ShowRobotCommand}"/>
+            </MenuItem>
+            <MenuItem Header="Run">
+                <MenuItem Header="Run Once"         Command="{Binding RunOnceCommand}"/>
+                <MenuItem Header="Run Continuous"   Command="{Binding RunContinuousCommand}"/>
+                <MenuItem Header="Stop"             Command="{Binding StopCommand}"/>
+            </MenuItem>
+            <MenuItem Header="System">
+                <MenuItem Header="Settings"         Command="{Binding ShowSettingsCommand}"/>
+                <MenuItem Header="Save Config"      Command="{Binding SaveConfigCommand}"/>
+                <MenuItem Header="Load Config"      Command="{Binding LoadConfigCommand}"/>
+            </MenuItem>
+        </Menu>
+
+        <!-- Top Toolbar -->
+        <ToolBarTray DockPanel.Dock="Top" Background="{StaticResource BgPanel}">
+            <ToolBar Background="Transparent">
+                <Button Content="Open"      Command="{Binding OpenImageCommand}"   Style="{StaticResource BtnPanel}" Margin="2"/>
+                <Button Content="Run"       Command="{Binding RunOnceCommand}"     Style="{StaticResource BtnAccent}" Margin="2"/>
+                <Button Content="Stop"      Command="{Binding StopCommand}"        Style="{StaticResource BtnPanel}" Margin="2" IsEnabled="{Binding IsRunning}"/>
+                <Separator/>
+                <Button Content="Batch"     Command="{Binding ShowBatchCommand}"   Style="{StaticResource BtnPanel}" Margin="2"/>
+                <Button Content="Models"    Command="{Binding ShowModelsCommand}"  Style="{StaticResource BtnPanel}" Margin="2"/>
+                <Button Content="Export"    Command="{Binding ExportResultsCommand}" Style="{StaticResource BtnPanel}" Margin="2"/>
+                <Separator/>
+                <TextBlock Text="Backend:" VerticalAlignment="Center" Margin="8,0,4,0" Foreground="{StaticResource FgDim}"/>
+                <Ellipse Width="10" Height="10" Fill="{Binding IsConnected, Converter={StaticResource BoolToColorConverter}}" VerticalAlignment="Center"/>
+                <TextBlock Text="{Binding BackendStatus}" VerticalAlignment="Center" Margin="4,0,8,0" Foreground="{StaticResource FgDim}"/>
+                <Separator/>
+                <TextBlock Text="{Binding StatusBarText}" VerticalAlignment="Center" Margin="8,0,4,0" Foreground="{StaticResource FgDim}" FontSize="11"/>
+            </ToolBar>
+        </ToolBarTray>
+
+        <!-- Main Layout -->
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="220" MinWidth="180" MaxWidth="400"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="300" MinWidth="200" MaxWidth="500"/>
+            </Grid.ColumnDefinitions>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="220" MinHeight="120" MaxHeight="400"/>
+            </Grid.RowDefinitions>
+
+            <!-- Left: Toolbox -->
+            <Border Grid.Column="0" Grid.Row="0" Grid.RowSpan="2"
+                    Background="{StaticResource BgPanel}" BorderBrush="{StaticResource BorderColor}" BorderThickness="0,0,1,0">
+                <DockPanel>
+                    <TextBlock Text="Toolbox" DockPanel.Dock="Top" Padding="8,6" FontWeight="Bold" Foreground="{StaticResource FgMain}"/>
+                    <ListBox ItemsSource="{Binding ToolItems}" SelectedItem="{Binding SelectedTool}"
+                             Background="Transparent" BorderThickness="0">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <Border Padding="8,6" Background="Transparent">
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="{Binding Icon}" FontSize="16" Margin="0,0,8,0" VerticalAlignment="Center"/>
+                                        <TextBlock Text="{Binding Name}" Foreground="{StaticResource FgMain}" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </Border>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                </DockPanel>
+            </Border>
+
+            <GridSplitter Grid.Column="1" Grid.Row="0" Grid.RowSpan="2" Width="4" Background="{StaticResource BorderColor}" HorizontalAlignment="Stretch"/>
+
+            <!-- Center: Image Display -->
+            <Border Grid.Column="2" Grid.Row="0" Background="#0E0E0E" BorderBrush="{StaticResource BorderColor}" BorderThickness="0,0,1,0">
+                <Grid>
+                    <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
+                                  Background="Transparent">
+                        <Image Source="{Binding DisplayImage}"
+                               Stretch="None"
+                               RenderTransformOrigin="0.5,0.5"
+                               HorizontalAlignment="Center" VerticalAlignment="Center">
+                            <Image.RenderTransform>
+                                <ScaleTransform ScaleX="{Binding ImageScale}" ScaleY="{Binding ImageScale}"/>
+                            </Image.RenderTransform>
+                            <Image.InputBindings>
+                                <MouseBinding Gesture="WheelClick" Command="{Binding ResetZoomCommand}"/>
+                            </Image.InputBindings>
+                        </Image>
+                    </ScrollViewer>
+                    <TextBlock Text="No Image" HorizontalAlignment="Center" VerticalAlignment="Center"
+                               Foreground="{StaticResource FgDim}" FontSize="24"
+                               Visibility="{Binding DisplayImage, Converter={StaticResource NullToVisConverter}}"/>
+                    <!-- Status overlay -->
+                    <Border HorizontalAlignment="Right" VerticalAlignment="Top" Margin="8"
+                            Background="#AA000000" CornerRadius="4" Padding="8,4">
+                        <StackPanel>
+                            <TextBlock Text="{Binding ResultStatus}" Foreground="{StaticResource FgMain}" FontWeight="Bold"/>
+                            <TextBlock Text="{Binding ResultDetails}" Foreground="{StaticResource FgDim}" FontSize="11"/>
+                            <TextBlock Text="{Binding ZoomText}" Foreground="{StaticResource FgDim}" FontSize="11"/>
+                        </StackPanel>
+                    </Border>
+                    <!-- Stats overlay -->
+                    <Border HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="8"
+                            Background="#AA000000" CornerRadius="4" Padding="8,4">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="OK: " Foreground="{StaticResource Success}" FontWeight="Bold"/>
+                            <TextBlock Text="{Binding OkCount}" Foreground="{StaticResource FgMain}" Margin="0,0,12,0"/>
+                            <TextBlock Text="NG: " Foreground="{StaticResource Danger}" FontWeight="Bold"/>
+                            <TextBlock Text="{Binding NgCount}" Foreground="{StaticResource FgMain}"/>
+                        </StackPanel>
+                    </Border>
+                </Grid>
+            </Border>
+
+            <GridSplitter Grid.Column="3" Grid.Row="0" Grid.RowSpan="2" Width="4" Background="{StaticResource BorderColor}" HorizontalAlignment="Stretch"/>
+
+            <!-- Right: Properties Panel -->
+            <Border Grid.Column="4" Grid.Row="0" Grid.RowSpan="2"
+                    Background="{StaticResource BgPanel}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1,0,0,0">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="8">
+                        <!-- System Status -->
+                        <TextBlock Text="System Status" FontWeight="Bold" Foreground="{StaticResource FgMain}" Margin="0,0,0,8"/>
+                        <Grid Margin="0,0,0,8">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions><RowDefinition/><RowDefinition/><RowDefinition/><RowDefinition/></Grid.RowDefinitions>
+                            <TextBlock Text="Device:"     Foreground="{StaticResource FgDim}" Grid.Row="0" Grid.Column="0"/>
+                            <TextBlock Text="{Binding SystemDevice}" Foreground="{StaticResource FgMain}" Grid.Row="0" Grid.Column="1"/>
+                            <TextBlock Text="CUDA:"       Foreground="{StaticResource FgDim}" Grid.Row="1" Grid.Column="0"/>
+                            <TextBlock Text="{Binding SystemCuda}"   Foreground="{StaticResource FgMain}" Grid.Row="1" Grid.Column="1"/>
+                            <TextBlock Text="Memory:"     Foreground="{StaticResource FgDim}" Grid.Row="2" Grid.Column="0"/>
+                            <TextBlock Text="{Binding SystemMemory}" Foreground="{StaticResource FgMain}" Grid.Row="2" Grid.Column="1"/>
+                            <TextBlock Text="Model:"      Foreground="{StaticResource FgDim}" Grid.Row="3" Grid.Column="0"/>
+                            <TextBlock Text="{Binding SystemModel}"  Foreground="{StaticResource FgMain}" Grid.Row="3" Grid.Column="1" TextTrimming="CharacterEllipsis" MaxWidth="140"/>
+                        </Grid>
+                        <Separator Margin="0,8"/>
+
+                        <!-- Parameters -->
+                        <TextBlock Text="Parameters" FontWeight="Bold" Foreground="{StaticResource FgMain}" Margin="0,0,0,8"/>
+                        
+                        <TextBlock Text="Seg Threshold" Foreground="{StaticResource FgDim}" Margin="0,4,0,2"/>
+                        <Slider Minimum="0" Maximum="1" Value="{Binding SegThreshold}" TickFrequency="0.05" IsSnapToTickEnabled="False"/>
+                        <TextBox Text="{Binding SegThreshold, StringFormat=F2}" Margin="0,2,0,8"/>
+                        
+                        <TextBlock Text="Edge Threshold" Foreground="{StaticResource FgDim}" Margin="0,4,0,2"/>
+                        <Slider Minimum="0" Maximum="1" Value="{Binding EdgeThreshold}" TickFrequency="0.05" IsSnapToTickEnabled="False"/>
+                        <TextBox Text="{Binding EdgeThreshold, StringFormat=F2}" Margin="0,2,0,8"/>
+                        
+                        <CheckBox Content="Use HDR" IsChecked="{Binding UseHdr}" Foreground="{StaticResource FgMain}" Margin="0,4"/>
+                        <CheckBox Content="Highlight Repair" IsChecked="{Binding UseHighlightRepair}" Foreground="{StaticResource FgMain}" Margin="0,4"/>
+                        <CheckBox Content="Return Visualization" IsChecked="{Binding ReturnVis}" Foreground="{StaticResource FgMain}" Margin="0,4"/>
+                        
+                        <Separator Margin="0,8"/>
+                        
+                        <!-- Model Management -->
+                        <TextBlock Text="Model" FontWeight="Bold" Foreground="{StaticResource FgMain}" Margin="0,0,0,8"/>
+                        <ComboBox ItemsSource="{Binding Models}" SelectedItem="{Binding SelectedModelInfo}" DisplayMemberPath="Name" Margin="0,0,0,4"/>
+                        <TextBlock Text="{Binding SelectedModelInfo.Type}" Foreground="{StaticResource FgDim}" FontSize="11" Margin="0,0,0,4"/>
+                        <Button Content="Load Model" Command="{Binding LoadModelCommand}" Style="{StaticResource BtnAccent}" Margin="0,4"/>
+                        
+                        <Separator Margin="0,8"/>
+                        
+                        <!-- Backend Config -->
+                        <TextBlock Text="Backend" FontWeight="Bold" Foreground="{StaticResource FgMain}" Margin="0,0,0,8"/>
+                        <ComboBox ItemsSource="{Binding BackendOptions}" SelectedItem="{Binding SelectedBackend}" Margin="0,0,0,4"/>
+                        <Button Content="Apply Config" Command="{Binding ApplyConfigCommand}" Style="{StaticResource BtnPanel}" Margin="0,4"/>
+                    </StackPanel>
+                </ScrollViewer>
+            </Border>
+
+            <!-- Bottom: Log & Results -->
+            <GridSplitter Grid.Column="0" Grid.ColumnSpan="5" Grid.Row="1" Height="4" Background="{StaticResource BorderColor}" HorizontalAlignment="Stretch"/>
+
+            <TabControl Grid.Column="0" Grid.ColumnSpan="5" Grid.Row="2"
+                        Background="{StaticResource BgPanel}" BorderThickness="0"
+                        SelectedIndex="{Binding SelectedBottomTabIndex}">
+                <TabItem Header="Results">
+                    <DataGrid ItemsSource="{Binding ResultRows}" AutoGenerateColumns="False"
+                              CanUserAddRows="False" IsReadOnly="True">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Item"    Binding="{Binding ItemName}" Width="*"/>
+                            <DataGridTextColumn Header="X (px)"  Binding="{Binding X}"        Width="80"/>
+                            <DataGridTextColumn Header="Y (px)"  Binding="{Binding Y}"        Width="80"/>
+                            <DataGridTextColumn Header="Score"   Binding="{Binding Score}"    Width="80"/>
+                            <DataGridTextColumn Header="Status"  Binding="{Binding Status}"   Width="80"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </TabItem>
+                <TabItem Header="Log">
+                    <TextBox Text="{Binding LogText}" IsReadOnly="True"
+                             Background="#0E0E0E" Foreground="{StaticResource FgDim}"
+                             FontFamily="Consolas" FontSize="11"
+                             VerticalScrollBarVisibility="Auto" TextWrapping="Wrap"/>
+                </TabItem>
+            </TabControl>
+        </Grid>
+    </DockPanel>
+</Window>
