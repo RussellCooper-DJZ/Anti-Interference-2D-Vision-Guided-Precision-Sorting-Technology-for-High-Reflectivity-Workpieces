@@ -1,0 +1,47 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+
+# 虚拟环境
+.venv
+.venv_win
+venv
+env
+
+# 数据集和输出（挂载卷替代）
+dataset
+checkpoints/*.pth
+checkpoints/*.pt
+checkpoints/*.onnx
+checkpoints/*.engine
+logs
+htmlcov
+
+# 测试缓存
+.pytest_cache
+.coverage
+coverage.xml
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# 文档构建输出
+docs/_build
+
+# 归档（体积大）
+archive
+results
+
+# 样本数据
+test_samples

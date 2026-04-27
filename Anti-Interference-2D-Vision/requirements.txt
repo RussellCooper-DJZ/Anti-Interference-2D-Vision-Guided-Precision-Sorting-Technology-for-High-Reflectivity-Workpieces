@@ -1,0 +1,45 @@
+# AGEANet — 高反光工件精准边缘识别抓取系统
+# Anti-Glare Edge-Aware Network for High-Reflectivity Workpiece Sorting
+
+# 核心依赖
+numpy>=1.21.0
+opencv-python>=4.5.0
+opencv-contrib-python>=4.5.0
+scipy>=1.9.0
+
+# 深度学习框架
+torch>=2.0.0
+torchvision>=0.15.0
+
+# 模型导出 (嵌入式部署)
+onnx>=1.14.0
+onnxscript>=0.1.0
+
+# 可选：TFLite 转换 (嵌入式部署到 RA8P1)
+# tensorflow>=2.13.0
+# onnx-tf>=1.10.0
+
+# 配置解析 (core/unified_config 需要)
+pyyaml>=6.0
+
+# 可选：ONNX 推理引擎
+# onnxruntime>=1.15.0
+# onnxruntime-gpu>=1.15.0
+
+# 可选：TensorRT 推理 (需要 NVIDIA GPU)
+# tensorrt>=8.6.0
+# pycuda>=2022.1
+
+# 可选：训练可视化
+# tensorboard>=2.13.0
+# matplotlib>=3.5.0
+
+# FastAPI 后端服务（供 C# WPF 上位机调用）
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+python-multipart>=0.0.9
+pillow>=10.0.0
+
+# 可选：ONNX Runtime 推理（取消注释以启用）
+# onnxruntime>=1.15.0
+# onnxruntime-gpu>=1.15.0

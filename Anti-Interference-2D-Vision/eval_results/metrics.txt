@@ -1,0 +1,5 @@
+IoU: 0.3975
+Dice: 0.5689
+Edge F1: 0.0068
+Edge Precision: 0.0102
+Edge Recall: 0.0051

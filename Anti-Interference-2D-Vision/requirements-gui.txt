@@ -1,0 +1,8 @@
+# AGEANet — 原生桌面 GUI 依赖
+# 安装方式: pip install -r requirements-gui.txt
+
+# 包含生产依赖 + 开发依赖
+-r requirements-dev.txt
+
+# GUI 框架
+PyQt6>=6.4.0
