@@ -49,7 +49,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-from src.vision.feature_extraction import AGEANet, AGEANetLite
+import yaml
+from src.hardware.camera import get_camera
+from src.vision.inference_engine import UnifiedInferenceEngine
 from src.vision.hdr_processing import (
     exposure_fusion_mertens,
     repair_highlight_regions,
@@ -179,75 +181,7 @@ class AbbRobotStub:
 # 2. 视觉推理引擎
 # ============================================================
 
-class VisionInferenceEngine:
-    """
-    封装 AGEANet 推理，支持 CPU/GPU，输入 BGR 图像，输出分割掩膜和边缘图。
-    """
-
-    def __init__(self, model_path: Optional[str] = None,
-                 model_type: str = 'standard',
-                 base_ch: int = 64,
-                 img_size: int = 512,
-                 device: Optional[str] = None):
-        self.img_size = img_size
-        self.device   = torch.device(
-            device if device else ('cuda' if torch.cuda.is_available() else 'cpu')
-        )
-
-        # 构建模型
-        if model_type == 'lite':
-            self.model = AGEANetLite(in_channels=3, base_ch=base_ch).to(self.device)
-        else:
-            self.model = AGEANet(in_channels=3, base_ch=base_ch).to(self.device)
-
-        # 加载权重
-        if model_path and Path(model_path).exists():
-            ckpt = torch.load(model_path, map_location=self.device)
-            state = ckpt.get('model', ckpt)
-            self.model.load_state_dict(state, strict=False)
-            logger.info(f"[VisionEngine] 已加载模型: {model_path}")
-        else:
-            logger.info("[VisionEngine] 警告：未加载预训练权重，使用随机初始化")
-
-        self.model.eval()
-
-    @torch.no_grad()
-    def infer(self, image_bgr: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        对单张 BGR 图像执行推理。
-
-        Args:
-            image_bgr: (H, W, 3) uint8 BGR 图像
-
-        Returns:
-            seg_mask:  (H, W) uint8，分割掩膜（0/255）
-            edge_mask: (H, W) uint8，边缘掩膜（0/255）
-        """
-        h_orig, w_orig = image_bgr.shape[:2]
-
-        # 预处理
-        img_resized = cv2.resize(image_bgr, (self.img_size, self.img_size))
-        img_rgb     = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
-        tensor      = torch.from_numpy(img_rgb).permute(2, 0, 1).float() / 255.0
-        tensor      = tensor.unsqueeze(0).to(self.device)
-
-        # 推理
-        outputs = self.model(tensor)
-        seg_prob  = outputs['seg'][0, 0].cpu().numpy()   # (H, W) float [0,1]
-        edge_prob = outputs['edge'][0, 0].cpu().numpy()  # (H, W) float [0,1]
-
-        # 后处理：二值化
-        seg_mask  = (seg_prob  > 0.5).astype(np.uint8) * 255
-        edge_mask = (edge_prob > 0.3).astype(np.uint8) * 255
-
-        # 恢复原始分辨率
-        if (h_orig, w_orig) != (self.img_size, self.img_size):
-            seg_mask  = cv2.resize(seg_mask,  (w_orig, h_orig),
-                                   interpolation=cv2.INTER_NEAREST)
-            edge_mask = cv2.resize(edge_mask, (w_orig, h_orig),
-                                   interpolation=cv2.INTER_NEAREST)
-
-        return seg_mask, edge_mask
+# 使用 src/vision/inference_engine.py 中的 UnifiedInferenceEngine 代替原有的 VisionInferenceEngine
 
 
 # ============================================================
@@ -268,46 +202,37 @@ class ShipVisionPipeline:
       7. ABB 机器人通信（发送目标位姿）
     """
 
-    def __init__(
-        self,
-        model_path:    Optional[str] = None,
-        model_type:    str = 'standard',
-        img_size:      int = 512,
-        camera_matrix: Optional[np.ndarray] = None,
-        dist_coeffs:   Optional[np.ndarray] = None,
-        T_cam2robot:   Optional[np.ndarray] = None,
-        robot_host:    str = "192.168.1.100",
-        robot_port:    int = 6510,
-        verbose:       bool = True,
-    ):
+    def __init__(self, config_path: str, verbose: bool = True):
         self.verbose = verbose
+        with open(config_path, 'r') as f:
+            self.config = yaml.safe_load(f)
 
         # 视觉推理引擎
-        self.engine = VisionInferenceEngine(
-            model_path=model_path,
-            model_type=model_type,
-            img_size=img_size,
-        )
+        self.engine = UnifiedInferenceEngine(self.config['model'])
 
         # HDR 融合与反光抑制
         self.anti_glare = AntiGlarePipeline()
 
         # 亚像素定位器
-        self.localizer = SubpixelLocalizer(min_area=200)
+        self.localizer = SubpixelLocalizer(
+            min_area=self.config['localization']['min_area'],
+            min_circularity=self.config['localization']['min_circularity'],
+            subpixel_window=self.config['localization']['subpixel_window']
+        )
 
-        # 坐标变换器（使用默认内参，实际使用时需标定）
-        K = camera_matrix if camera_matrix is not None else np.array([
-            [800.0,   0.0, 320.0],
-            [  0.0, 800.0, 240.0],
-            [  0.0,   0.0,   1.0],
-        ], dtype=np.float64)
-        dist = dist_coeffs if dist_coeffs is not None else np.zeros((1, 5))
-        T    = T_cam2robot if T_cam2robot is not None else np.eye(4)
+        # 坐标变换器
+        K = np.array(self.config['calibration']['camera_matrix']).reshape(3, 3)
+        dist = np.array(self.config['calibration']['dist_coeffs'])
+        T = np.array(self.config['calibration']['hand_eye_matrix']).reshape(4, 4)
         self.transformer = CoordinateTransformer(K, dist, T)
 
-        # ABB 机器人通信（模拟桩）
-        self.robot = AbbRobotStub(host=robot_host, port=robot_port,
-                                  verbose=verbose)
+        # 机器人通信
+        robot_cfg = self.config['robot']
+        if robot_cfg['type'] == 'abb_stub':
+            self.robot = AbbRobotStub(host=robot_cfg['ip'], port=robot_cfg['port'], verbose=verbose)
+        else:
+            # 这里可以扩展其他机器人类型
+            self.robot = AbbRobotStub(host=robot_cfg['ip'], port=robot_cfg['port'], verbose=verbose)
 
         # 性能统计
         self._frame_count = 0
@@ -361,7 +286,9 @@ class ShipVisionPipeline:
 
         # ---- Step 3: 深度学习推理 ----
         t0 = time.perf_counter()
-        seg_mask, edge_mask = self.engine.infer(image_proc)
+        infer_results = self.engine.infer(image_proc)
+        seg_mask = infer_results['seg_mask']
+        edge_mask = infer_results['edge_mask']
         timing['infer_ms'] = (time.perf_counter() - t0) * 1000
 
         # ---- Step 4: 高光区域检测 ----
@@ -578,67 +505,58 @@ def run_image_mode(pipeline: ShipVisionPipeline, input_path: str, output_dir: st
         logger.info(f"[Image] 已保存: {out_path}")
 
 
-def run_camera_mode(pipeline: ShipVisionPipeline, camera_id: int, output_dir: str):
+def run_camera_mode(pipeline: ShipVisionPipeline, output_dir: str):
     """摄像头实时模式。"""
     os.makedirs(output_dir, exist_ok=True)
-    cap = cv2.VideoCapture(camera_id)
-    if not cap.isOpened():
-        logger.info(f"[Camera] 错误：无法打开摄像头 {camera_id}")
+    
+    # 使用工业相机接口
+    cam = get_camera(pipeline.config['camera'])
+    if not cam.open():
+        logger.error("[Camera] 无法打开相机设备")
         return
 
-    logger.info(f"[Camera] 已打开摄像头 {camera_id}，按 'q' 退出，'s' 保存当前帧")
+    logger.info("[Camera] 相机已就绪，按 'q' 退出，'s' 保存当前帧")
     frame_idx = 0
 
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
+    try:
+        while True:
+            frame = cam.get_frame()
+            if frame is None:
+                continue
 
-        result = pipeline.process_frame(frame, send_to_robot=True)
-        cv2.imshow("Ship Vision Pipeline", result['vis_image'])
+            result = pipeline.process_frame(frame, send_to_robot=True)
+            cv2.imshow("High-Reflectivity Vision Pipeline", result['vis_image'])
 
-        key = cv2.waitKey(1) & 0xFF
-        if key == ord('q'):
-            break
-        elif key == ord('s'):
-            out_path = os.path.join(output_dir, f"capture_{frame_idx:04d}.png")
-            cv2.imwrite(out_path, result['vis_image'])
-            logger.info(f"[Camera] 已保存: {out_path}")
-            frame_idx += 1
-
-    cap.release()
-    cv2.destroyAllWindows()
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord('q'):
+                break
+            elif key == ord('s'):
+                out_path = os.path.join(output_dir, f"capture_{frame_idx:04d}.png")
+                cv2.imwrite(out_path, result['vis_image'])
+                logger.info(f"[Camera] 已保存: {out_path}")
+                frame_idx += 1
+    finally:
+        cam.close()
+        cv2.destroyAllWindows()
 
 
 def main():
-    parser = argparse.ArgumentParser(description="船舶高光面视觉引导精密分拣系统")
+    parser = argparse.ArgumentParser(description="高反光工件抗干扰精准分拣系统")
+    parser.add_argument("--config", type=str, default="src/config/system_config.yaml",
+                        help="配置文件路径")
     parser.add_argument("--mode", type=str, default="demo",
                         choices=["demo", "image", "camera"])
-    parser.add_argument("--model_path", type=str, default=None)
-    parser.add_argument("--model_type", type=str, default="standard",
-                        choices=["standard", "lite"])
-    parser.add_argument("--img_size",   type=int, default=512)
-    parser.add_argument("--input",      type=str, default=None,
+    parser.add_argument("--input", type=str, default=None,
                         help="图像路径或目录（image 模式）")
-    parser.add_argument("--camera_id",  type=int, default=0)
     parser.add_argument("--output_dir", type=str, default="./output")
-    parser.add_argument("--robot_host", type=str, default="192.168.1.100")
-    parser.add_argument("--robot_port", type=int, default=6510)
-    parser.add_argument("--no_robot",   action="store_true",
+    parser.add_argument("--no_robot", action="store_true",
                         help="不连接机器人（仅视觉处理）")
     args = parser.parse_args()
 
     # 构建流水线
-    pipeline = ShipVisionPipeline(
-        model_path=args.model_path,
-        model_type=args.model_type,
-        img_size=args.img_size,
-        robot_host=args.robot_host,
-        robot_port=args.robot_port,
-        verbose=True,
-    )
+    pipeline = ShipVisionPipeline(config_path=args.config, verbose=True)
 
-    # 连接机器人（模拟桩）
+    # 连接机器人
     if not args.no_robot:
         pipeline.robot.connect()
         pipeline.robot.home()
@@ -652,7 +570,7 @@ def main():
             return
         run_image_mode(pipeline, args.input, args.output_dir)
     elif args.mode == "camera":
-        run_camera_mode(pipeline, args.camera_id, args.output_dir)
+        run_camera_mode(pipeline, args.output_dir)
 
     # 断开机器人
     if not args.no_robot:

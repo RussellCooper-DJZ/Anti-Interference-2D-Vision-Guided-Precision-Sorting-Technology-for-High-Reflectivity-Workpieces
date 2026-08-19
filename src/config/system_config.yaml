@@ -1,0 +1,46 @@
+# 高反光工件分拣系统统一配置文件
+# Unified System Configuration
+
+# 1. 硬件配置 (Hardware)
+camera:
+  type: "mock" # 可选: "basler", "cv", "mock"
+  device_id: 0
+  serial_number: "21001234"
+  exposure_time_us: 10000
+  gain: 0
+
+robot:
+  type: "abb_stub" # 可选: "abb_egm", "abb_stub"
+  ip: "192.168.1.100"
+  port: 6510
+  home_pos: [0.0, 0.0, 500.0, 0.0, 0.0, 0.0]
+
+# 2. 视觉算法配置 (Vision)
+model:
+  type: "yolo" # 可选: "ageanet", "yolo"
+  path: "checkpoints/yolov8n_glare_aware.pt"
+  img_size: 640
+  conf_threshold: 0.5
+  use_hdr: true
+
+hdr:
+  method: "mertens"
+  exposure_times: [1, 5, 20] # 模拟曝光倍率
+
+localization:
+  min_area: 200
+  subpixel_window: 5
+  min_circularity: 0.7
+
+# 3. 标定参数 (Calibration)
+calibration:
+  camera_matrix:
+    [800.0, 0.0, 320.0,
+     0.0, 800.0, 240.0,
+     0.0, 0.0, 1.0]
+  dist_coeffs: [0.0, 0.0, 0.0, 0.0, 0.0]
+  hand_eye_matrix:
+    [1.0, 0.0, 0.0, 100.0,
+     0.0, 1.0, 0.0, 200.0,
+     0.0, 0.0, 1.0, 500.0,
+     0.0, 0.0, 0.0, 1.0]
