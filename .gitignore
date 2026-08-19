@@ -5,3 +5,6 @@ results/
 temp_detection_head.txt
 data/raw/
 data/processed/
+.coverage
+htmlcov/
+.pytest_cache/
