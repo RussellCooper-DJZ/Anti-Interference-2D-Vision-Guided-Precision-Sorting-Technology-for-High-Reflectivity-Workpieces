@@ -6,6 +6,7 @@ glare_simulator.py — 物理级光斑模拟与数据增强
 import cv2
 import numpy as np
 import random
+from typing import List, Optional
 
 class GlareSimulator:
     """
