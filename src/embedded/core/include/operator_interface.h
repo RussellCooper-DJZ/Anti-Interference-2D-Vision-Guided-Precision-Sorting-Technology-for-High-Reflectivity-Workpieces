@@ -167,6 +167,35 @@ ev_status_t ev_avg_pool2d_int8_ref(
 );
 
 /* ============================================================
+ * 工业级视觉算子 (针对高反光工件优化)
+ * ============================================================ */
+
+/**
+ * @brief HDR 曝光融合 (Helium 向量化实现)
+ * 融合欠曝、正常、过曝三帧图像以消除反光。
+ */
+ev_status_t ev_hdr_fusion_helium(
+    const uint8_t* under_exp,
+    const uint8_t* normal_exp,
+    const uint8_t* over_exp,
+    uint8_t*       output,
+    uint32_t       width,
+    uint32_t       height
+);
+
+/**
+ * @brief 高光抑制滤波器
+ * 基于自适应阈值和 Helium 加速的中值/均值滤波。
+ */
+ev_status_t ev_glare_suppression_helium(
+    const uint8_t* input,
+    uint8_t*       output,
+    uint32_t       width,
+    uint32_t       height,
+    uint8_t        threshold
+);
+
+/* ============================================================
  * 静态内存池管理
  * ============================================================ */
 

@@ -1,6 +1,8 @@
 #include "hal_data.h"
-#include "tensorflow/lite/micro/micro_interpreter.h"
+#include "core/include/operator_interface.h"
+#include "core/include/vision_types.h"
 #include "model_data.h" // 包含转换后的模型数组
+#include "tensorflow/lite/micro/micro_interpreter.h"
 // Includes the converted model array
 // Enthält das konvertierte Modellarray
 
@@ -25,32 +27,31 @@ namespace {
 }
 
 void hal_entry(void) {
-    /* 初始化 FSP 驱动 (CSI, I2C, UART 等) */
-    /* Initialize FSP drivers (CSI, I2C, UART, etc.) */
-    /* FSP-Treiber initialisieren (CSI, I2C, UART usw.) */
+    /* 初始化 FSP 驱动 */
     R_CSI_Open(&g_csi0_ctrl, &g_csi0_cfg);
     R_SCI_UART_Open(&g_uart0_ctrl, &g_uart0_cfg);
     
+    /* 初始化内存池 */
+    ev_memory_pool_init(tensor_arena, kTensorArenaSize);
+
     /* 初始化 TFLM 解释器 */
-    /* Initialize TFLM interpreter */
-    /* TFLM-Interpreter initialisieren */
     static tflite::MicroInterpreter interpreter(
         tflite::GetModel(g_model_data), resolver, tensor_arena, kTensorArenaSize);
-    interpreter.AllocateTensors();
+    if (interpreter.AllocateTensors() != kTfLiteOk) {
+        // 内存分配失败处理
+        while(1);
+    }
     
     while (1) {
-        /* 1. 采集多重曝光图像 */
-        /* 1. Acquire multi-exposure images */
-        /* 1. Mehrfachbelichtungsbilder erfassen */
-        // 伪代码：控制传感器曝光并捕获图像到 g_img_buffer_under 和 g_img_buffer_over
-        // Pseudocode: Control sensor exposure and capture images to g_img_buffer_under and g_img_buffer_over
-        // Pseudocode: Sensorbelichtung steuern und Bilder in g_img_buffer_under und g_img_buffer_over erfassen
-        capture_multi_exposure(g_img_buffer_under, g_img_buffer_over);
+        /* 1. 采集多重曝光图像 (欠曝、正常、过曝) */
+        uint8_t* g_img_buffer_normal = (uint8_t*)ev_memory_pool_alloc(IMG_WIDTH * IMG_HEIGHT, 16);
+        capture_multi_exposure(g_img_buffer_under, g_img_buffer_normal, g_img_buffer_over);
         
-        /* 2. HDR 融合 (Helium 加速) */
-        /* 2. HDR Fusion (Helium accelerated) */
-        /* 2. HDR-Fusion (Helium-beschleunigt) */
-        helium_image_fusion(g_img_buffer_under, g_img_buffer_over, g_img_buffer_hdr, IMG_WIDTH * IMG_HEIGHT);
+        /* 2. HDR 融合 (使用 EdgeVision-C Helium 加速版) */
+        ev_status_t status = ev_hdr_fusion_helium(g_img_buffer_under, g_img_buffer_normal, 
+                                                 g_img_buffer_over, g_img_buffer_hdr, 
+                                                 IMG_WIDTH, IMG_HEIGHT);
+        if (status != EV_SUCCESS) continue;
         
         /* 3. 深度学习推理 */
         /* 3. Deep Learning Inference */
